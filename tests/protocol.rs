@@ -120,6 +120,12 @@ fn hello_ready_sync_invoke_request_shutdown() {
     h.send(json!({"type": "invoke", "id": "r3", "instance_id": "i2", "action_id": pick, "trigger": "press", "inputs": {}}));
     assert_eq!(h.expect("error")["message"], "demo error");
 
+    // A sync is the full instance set: i1 is gone, so a fan-out reaches nobody
+    // and only the new instance gets a state.
+    h.send(json!({"type": "sync", "instances": [{"instance_id": "i9", "action_id": mute, "inputs": {}}]}));
+    let st = h.expect_where("state", |m| m["instance_id"] == "i9");
+    assert_eq!(st["state"], "unmuted");
+
     // Unknown message types are ignored.
     h.send(json!({"type": "from_the_future"}));
 

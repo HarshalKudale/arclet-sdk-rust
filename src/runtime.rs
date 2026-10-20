@@ -180,6 +180,11 @@ impl Runtime {
             .map(|(i, _)| i.clone())
             .collect()
     }
+    /// Whether any action of this plugin is currently placed. Pollers can
+    /// skip work while this is false.
+    pub fn has_instances(&self) -> bool {
+        !self.0.action_of.lock().unwrap().is_empty()
+    }
     /// Configured inputs of a placed instance.
     pub fn inputs_of(&self, instance_id: &str) -> Value {
         self.0.inputs_of.lock().unwrap().get(instance_id).cloned().unwrap_or(json!({}))
@@ -458,6 +463,12 @@ fn handle_sync(core: &Arc<Core>, msg: &Value) {
     let fg_title = opt_str(&msg["fg_title"]);
     let instances = msg["instances"].as_array().cloned().unwrap_or_default();
     log(format!("sync: {} instance(s)", instances.len()));
+
+    // `sync` is the full set: forget instances that were removed.
+    let keep: std::collections::HashSet<&str> = instances.iter().filter_map(|i| i["instance_id"].as_str()).collect();
+    rt.0.action_of.lock().unwrap().retain(|iid, _| keep.contains(iid.as_str()));
+    rt.0.inputs_of.lock().unwrap().retain(|iid, _| keep.contains(iid.as_str()));
+    rt.0.state.lock().unwrap().retain(|iid, _| keep.contains(iid.as_str()));
 
     for inst in &instances {
         let Some(iid) = inst["instance_id"].as_str() else { continue };
