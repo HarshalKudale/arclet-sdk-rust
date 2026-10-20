@@ -1,5 +1,6 @@
-//! File logger: appends timestamped lines to `log.txt` in the plugin's working
-//! directory (the host launches plugins with cwd = plugin folder).
+//! Logger: timestamped lines on stderr. The host captures a plugin's stderr
+//! into `plugin-data/<id>/log.txt` (and shows a setup program's last stderr
+//! line as its error).
 
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -20,9 +21,7 @@ fn timestamp() -> String {
     format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}", rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
-/// Append a line to `log.txt`. Never fails or panics.
+/// Write a line to stderr. Never fails or panics.
 pub fn log(msg: impl AsRef<str>) {
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("log.txt") {
-        let _ = writeln!(f, "[{}] {}", timestamp(), msg.as_ref());
-    }
+    let _ = writeln!(std::io::stderr(), "[{}] {}", timestamp(), msg.as_ref());
 }

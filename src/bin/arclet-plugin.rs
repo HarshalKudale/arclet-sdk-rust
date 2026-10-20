@@ -1,8 +1,10 @@
 //! `arclet-plugin` — CLI for Rust Arclet plugins (run from the plugin crate folder).
 //!
-//!   dev [--skip-setup]   cargo build, then write dist/<id>/ pointing at target/debug
-//!   build                cargo build --release, assemble a self-contained dist/<id>/
-//!   package              zip dist/<id>/ into dist/<id>.arclet
+//!   dev [--skip-setup] [--watch]   cargo build (debug), assemble dist/<id>/ for
+//!                                  "Load Unpacked"; --watch rebuilds on change and
+//!                                  Arclet restarts the plugin when its exe changes
+//!   build                          cargo build --release, assemble dist/<id>/
+//!   package                        zip dist/<id>/ into dist/<id>.arclet
 //!
 //! Codegen runs every built binary with ARCLET_CODEGEN=1; the plugin binary
 //! prints { manifest, actions } and the setup binary exits silently.
@@ -12,7 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const USAGE: &str = "arclet-plugin <dev|build|package>\n\n  dev [--skip-setup]  build (debug) + generate dist/<id>/ for \"Load Unpacked\"\n  build               build (release) + assemble dist/<id>/\n  package             zip dist/<id>/ -> dist/<id>.arclet\n";
+const USAGE: &str = "arclet-plugin <dev|build|package>\n\n  dev [--skip-setup] [--watch]  build (debug) + assemble dist/<id>/ for \"Load Unpacked\"\n  build                         build (release) + assemble dist/<id>/\n  package                       zip dist/<id>/ -> dist/<id>.arclet\n";
 
 fn die(msg: impl std::fmt::Display) -> ! {
     eprintln!("\n  ✗ {msg}");
@@ -95,8 +97,22 @@ fn stage_setup_ui(manifest: &mut Value, meta: &Value, dist: &Path) {
     manifest["setup"]["page"] = format!("setup-ui/{}", name.to_string_lossy()).into();
 }
 
+/// Copy a built binary into `dist`. Arclet may be running the previous copy,
+/// which Windows won't let us overwrite but will let us rename, so move it aside.
+fn stage_exe(exe: &Path, dist: &Path) {
+    let dest = dist.join(exe.file_name().unwrap());
+    if dest.exists() {
+        let old = dest.with_extension("old");
+        let _ = fs::remove_file(&old);
+        let _ = fs::rename(&dest, &old);
+    }
+    fs::copy(exe, &dest).unwrap_or_else(|e| die(format!("copy {}: {e}", exe.display())));
+}
+
 fn assemble(release: bool, skip_setup: bool) {
-    let stage = if release { "build" } else { "dev" };
+    // Both stages ship the binaries inside dist/<id>/: running them out of
+    // target/ would lock them against the next cargo build.
+    let stage = "build";
     println!("\n  Arclet Plugin — {}", if release { "build" } else { "dev" });
     let exes = cargo_build(release);
     let (plugin_exe, mut out) = codegen(&exes, stage);
@@ -112,18 +128,18 @@ fn assemble(release: bool, skip_setup: bool) {
     stage_setup_ui(&mut manifest, &out["meta"], &dist);
     copy_dir(Path::new("icons"), &dist.join("icons"));
 
+    // Self-contained: ship the plugin binary and (if declared) the setup binary.
+    let mut ship = vec![plugin_exe.clone()];
+    if let Some(setup) = manifest["setup"]["executable"].as_str() {
+        match exes.iter().find(|e| e.file_name().map_or(false, |n| n == Path::new(setup).file_name().unwrap())) {
+            Some(e) => ship.push(e.clone()),
+            None => die(format!("setup binary \"{setup}\" was not built — add a [[bin]] for it")),
+        }
+    }
+    for exe in ship {
+        stage_exe(&exe, &dist);
+    }
     if release {
-        // Self-contained: ship the plugin binary and (if declared) the setup binary.
-        let mut ship = vec![plugin_exe.clone()];
-        if let Some(setup) = manifest["setup"]["executable"].as_str() {
-            match exes.iter().find(|e| e.file_name().map_or(false, |n| n == Path::new(setup).file_name().unwrap())) {
-                Some(e) => ship.push(e.clone()),
-                None => die(format!("setup binary \"{setup}\" was not built — add a [[bin]] for it")),
-            }
-        }
-        for exe in ship {
-            fs::copy(&exe, dist.join(exe.file_name().unwrap())).unwrap_or_else(|e| die(e));
-        }
         for readme in ["readme.md", "README.md"] {
             if Path::new(readme).is_file() {
                 fs::copy(readme, dist.join("readme.md")).ok();
@@ -156,8 +172,14 @@ fn package() {
         .arg(&out)
         .arg("-C")
         .arg(&dir)
-        // Top-level names (no "./" prefix), matching the JS packager's layout.
-        .args(fs::read_dir(&dir).unwrap_or_else(|e| die(e)).flatten().map(|e| e.file_name()))
+        // Top-level names (no "./" prefix); skip binaries `dev` moved aside.
+        .args(
+            fs::read_dir(&dir)
+                .unwrap_or_else(|e| die(e))
+                .flatten()
+                .map(|e| e.file_name())
+                .filter(|n| Path::new(n).extension().map_or(true, |x| x != "old")),
+        )
         .status()
         .unwrap_or_else(|e| die(format!("tar: {e}")));
     if !status.success() {
@@ -166,10 +188,42 @@ fn package() {
     println!("  ✓ {}", out.display());
 }
 
+/// Newest modification time under `path` (recursive).
+fn newest_mtime(path: &Path) -> Option<std::time::SystemTime> {
+    let meta = fs::metadata(path).ok()?;
+    if !meta.is_dir() {
+        return meta.modified().ok();
+    }
+    fs::read_dir(path).ok()?.flatten().filter_map(|e| newest_mtime(&e.path())).max()
+}
+
+/// Rebuild (`dev`) whenever src/, icons/, setup-ui/ or Cargo.toml change. Each
+/// rebuild runs as a child so a compile error doesn't end the watch.
+fn watch(skip_setup: bool) -> ! {
+    let exe = std::env::current_exe().unwrap_or_else(|e| die(e));
+    let mut last = None;
+    loop {
+        let stamp = ["src", "icons", "setup-ui", "Cargo.toml"].iter().filter_map(|p| newest_mtime(Path::new(p))).max();
+        if stamp != last {
+            last = stamp;
+            let mut cmd = Command::new(&exe);
+            cmd.arg("dev");
+            if skip_setup {
+                cmd.arg("--skip-setup");
+            }
+            let _ = cmd.status();
+            println!("  … watching for changes (Ctrl+C to stop)");
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let flag = |f: &str| args.iter().any(|a| a == f);
     match args.first().map(String::as_str) {
-        Some("dev") => assemble(false, args.iter().any(|a| a == "--skip-setup")),
+        Some("dev") if flag("--watch") => watch(flag("--skip-setup")),
+        Some("dev") => assemble(false, flag("--skip-setup")),
         Some("build") => assemble(true, false),
         Some("package") => package(),
         _ => print!("{USAGE}"),

@@ -110,8 +110,13 @@ impl Ctx {
         self.set_error(&m);
         Err(Error::Fail(m))
     }
-    pub fn mark_setup_required(&self) {
-        self.rt.mark_setup_required();
+    /// Tell the host setup is needed again; `reason` is shown to the user.
+    pub fn mark_setup_required(&self, reason: impl ToString) {
+        self.rt.mark_setup_required(reason);
+    }
+    /// This plugin's persistent data folder (survives updates/reinstalls).
+    pub fn data_dir(&self) -> &std::path::Path {
+        self.rt.data_dir()
     }
     pub fn focus_app(&self, target: &str) -> Result<bool> {
         crate::host::focus_app(target)

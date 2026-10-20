@@ -31,6 +31,7 @@ Install the CLI once, then run it from the plugin crate folder:
 ```bash
 cargo install --path ../arclet-sdk-rust --bin arclet-plugin
 arclet-plugin dev       # debug build -> dist/<id>/ (use "Load Unpacked" in Arclet)
+arclet-plugin dev --watch  # rebuild on change; Arclet restarts the plugin
 arclet-plugin build     # release build -> self-contained dist/<id>/
 arclet-plugin package   # dist/<id>.arclet
 ```
@@ -50,8 +51,9 @@ arclet-plugin package   # dist/<id>.arclet
 ## Handlers and context
 
 Handlers are `Fn(&Ctx) -> arclet_sdk::Result`. `?` works on any `std::error::Error`; an error that
-escapes a handler is logged and sent to the host as an error frame. Each invoke runs on its own
-thread after the host ack is sent, so blocking I/O in a handler is fine.
+escapes a handler is logged and sent to the host as an error frame. Invokes for the same instance
+run in order on that instance's worker thread (after the host ack is sent); different instances,
+queries and events run in parallel, so blocking I/O in a handler is fine.
 
 ```rust
 ctx.set_state("on");            // this instance        ctx.fan_out("on");  // every instance
@@ -60,7 +62,8 @@ ctx.set_error("msg");           // report, keep going    return ctx.fail("msg");
 ctx.input_str("url"); ctx.input_bool("on"); ctx.input_f64("n");
 ctx.state; ctx.fg_process; ctx.fg_title; ctx.trigger; ctx.child_id; ctx.value; ctx.delta;
 ctx.send_keys("ctrl+m")?; ctx.focus_app("code.exe")?; ctx.installed_apps()?;
-ctx.mark_setup_required();
+ctx.mark_setup_required("Discord token expired");   // host stops the plugin, asks for setup
+ctx.data_dir();                 // %APPDATA%\Arclet\plugin-data\<id> — survives updates
 ```
 
 ## Inputs, queries
@@ -82,7 +85,15 @@ Plugin::new(..).query("scenes", |ctx| Ok(json!([{"value": "1", "label": "Main"}]
 
 `on_ready` fires once after the first sync with a cloneable, `Send` [`Runtime`]; move it into your
 own threads to push `set_state` / `notify` / `notify_visual` / `set_error`. `subscribe(&["focus_changed"])`
-+ `on_event` receive host events.
++ `on_event` receive host events. `on_shutdown` runs when the host stops the plugin (stdin closes
+or `shutdown` arrives); the host kills it 2 s later.
+
+## Data and logs
+
+Keep tokens and settings in `arclet_sdk::data_dir()` (or `arclet_sdk::data_file("token.json")`,
+which also moves a file left in the plugin folder by an older version). The folder survives
+updates and reinstalls. `log()` and anything printed (even `println!`) go to the plugin's
+`log.txt` in that folder; stdout is reserved for the protocol.
 
 ## Setup program
 
@@ -93,7 +104,7 @@ fn main() {
     arclet_sdk::run_setup(|ctx| {
         let host = ctx.input_str("host");
         if host.is_empty() { return ctx.fail("Host cannot be empty"); }
-        std::fs::write(".env", format!("HOST={host}\n"))?;   // cwd = plugin folder
+        std::fs::write(ctx.data_dir().join(".env"), format!("HOST={host}\n"))?;
         Ok(())
     })
 }
@@ -106,10 +117,16 @@ At runtime the plugin calls `arclet_sdk::load_env()` to read that `.env`. Declar
 
 - No bundling step: `build` ships the release exe(s) in `dist/<id>/`; the manifest has no `runtime.language`, so the host runs it as a native executable.
 - `.env` is read at runtime (`load_env()`), not inlined at build time.
-- `dev --watch` is not implemented; rebuild with `arclet-plugin dev`.
 - `category` is not part of the generated `actions.json` in the current JS SDK, so it is omitted here too.
 
 ## Layout
 
-`src/runtime.rs` (WebSocket protocol), `src/plugin.rs` (builders), `src/codegen.rs` (manifest/actions),
-`src/ws.rs` (RFC 6455 client framing), `src/bin/arclet-plugin.rs` (CLI), `tests/protocol.rs` (mock-host e2e).
+`src/runtime.rs` (stdio protocol v2), `src/plugin.rs` (builders), `src/codegen.rs` (manifest/actions),
+`src/bin/arclet-plugin.rs` (CLI), `tests/protocol.rs` (drives the demo over pipes).
+
+## Protocol v2
+
+One JSON object per line. Host → plugin on stdin: `hello` (first), `sync`, `invoke`, `request`
+(`query` / `wheel`), `event`, `result` (answer to `host_call`), `shutdown`. Plugin → host on stdout:
+`ready` (first), `ack`, `state`, `error`, `result` (answer to `request`), `host_call`, `subscribe`,
+`setup_required`. Unknown types are ignored. The manifest declares `"protocol": 2`.

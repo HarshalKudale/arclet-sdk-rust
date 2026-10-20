@@ -1,9 +1,10 @@
-//! End-to-end: run the demo example against a mock host and drive the protocol.
+//! End-to-end: run the demo example as the host would (piped stdio) and drive
+//! protocol v2.
 
 use serde_json::{json, Value};
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::process::{Command, Stdio};
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
 
 fn demo_exe() -> std::path::PathBuf {
@@ -13,95 +14,133 @@ fn demo_exe() -> std::path::PathBuf {
     p.join("examples").join(format!("demo{}", std::env::consts::EXE_SUFFIX))
 }
 
-fn send(s: &mut TcpStream, v: Value) {
-    // Server → client frames are unmasked.
-    let b = v.to_string().into_bytes();
-    let mut f = vec![0x81];
-    if b.len() < 126 {
-        f.push(b.len() as u8);
-    } else {
-        f.push(126);
-        f.extend((b.len() as u16).to_be_bytes());
-    }
-    f.extend(b);
-    s.write_all(&f).unwrap();
+struct Host {
+    child: Child,
+    stdin: ChildStdin,
+    lines: Receiver<String>,
 }
 
-fn read_frame(s: &mut TcpStream) -> Value {
-    let mut h = [0u8; 2];
-    s.read_exact(&mut h).unwrap();
-    let mut len = (h[1] & 0x7f) as usize;
-    if len == 126 {
-        let mut l = [0u8; 2];
-        s.read_exact(&mut l).unwrap();
-        len = u16::from_be_bytes(l) as usize;
+impl Host {
+    fn start(data_dir: &std::path::Path) -> Host {
+        let mut child = Command::new(demo_exe())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn demo (run via `cargo test`, which builds examples)");
+        let stdin = child.stdin.take().unwrap();
+        let stdout: ChildStdout = child.stdout.take().unwrap();
+        let (tx, lines) = channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut host = Host { child, stdin, lines };
+        host.send(json!({"type": "hello", "protocol": 2, "plugin_id": "example-rust", "data_dir": data_dir, "host_version": "test"}));
+        host
     }
-    let mut mask = [0u8; 4];
-    assert!(h[1] & 0x80 != 0, "client frames must be masked");
-    s.read_exact(&mut mask).unwrap();
-    let mut p = vec![0u8; len];
-    s.read_exact(&mut p).unwrap();
-    p.iter_mut().enumerate().for_each(|(i, b)| *b ^= mask[i % 4]);
-    serde_json::from_slice(&p).unwrap()
-}
 
-/// Read frames until one has the wanted `type` (ignoring unrelated pushes like the ticker).
-fn expect(s: &mut TcpStream, ty: &str) -> Value {
-    for _ in 0..20 {
-        let f = read_frame(s);
-        if f["type"] == ty {
-            return f;
+    fn send(&mut self, v: Value) {
+        writeln!(self.stdin, "{v}").unwrap();
+        self.stdin.flush().unwrap();
+    }
+
+    /// Every stdout line must be a protocol message; return the next one.
+    fn next(&self) -> Value {
+        let line = self.lines.recv_timeout(Duration::from_secs(10)).expect("plugin went quiet");
+        serde_json::from_str(&line).unwrap_or_else(|e| panic!("non-protocol stdout line {line:?}: {e}"))
+    }
+
+    /// Read until a message of type `ty` (skipping unrelated pushes like the ticker).
+    fn expect(&self, ty: &str) -> Value {
+        self.expect_where(ty, |_| true)
+    }
+
+    fn expect_where(&self, ty: &str, pred: impl Fn(&Value) -> bool) -> Value {
+        for _ in 0..50 {
+            let m = self.next();
+            if m["type"] == ty && pred(&m) {
+                return m;
+            }
         }
+        panic!("never saw a matching {ty} message");
     }
-    panic!("never saw a {ty} frame");
 }
 
 #[test]
-fn register_sync_invoke_query() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let dir = std::env::temp_dir().join(format!("arclet-sdk-test-{port}"));
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut child = Command::new(demo_exe())
-        .args(["--plugin-id", "example-rust", "--port", &port.to_string(), "--token", "tok"])
-        .current_dir(&dir)
-        .stdout(Stdio::null())
-        .spawn()
-        .expect("spawn demo (run via `cargo test`, which builds examples)");
+fn hello_ready_sync_invoke_request_shutdown() {
+    let dir = tempfile_dir("proto");
+    let mut h = Host::start(&dir);
 
-    let (mut s, _) = listener.accept().unwrap();
-    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    // Consume the HTTP upgrade request and answer 101.
-    let mut req = Vec::new();
-    let mut b = [0u8; 1];
-    while !req.ends_with(b"\r\n\r\n") {
-        s.read_exact(&mut b).unwrap();
-        req.push(b[0]);
-    }
-    s.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n").unwrap();
-
-    let reg = read_frame(&mut s);
-    assert_eq!(reg, json!({"type": "register", "plugin": "example-rust", "token": "tok"}));
+    let ready = h.expect("ready");
+    assert_eq!(ready["protocol"], 2);
 
     let mute = arclet_sdk::make_full_id("example-rust", "mute");
-    send(&mut s, json!({"type": "sync", "instances": [{"instance_id": "i1", "action_id": mute, "inputs": {}}]}));
-    let st = expect(&mut s, "state");
+    let ping = arclet_sdk::make_full_id("example-rust", "ping");
+    let volume = arclet_sdk::make_full_id("example-rust", "volume");
+    h.send(json!({"type": "sync", "instances": [{"instance_id": "i1", "action_id": mute, "inputs": {}}]}));
+    let st = h.expect_where("state", |m| m["instance_id"] == "i1");
     assert_eq!((st["instance_id"].as_str(), st["state"].as_str()), (Some("i1"), Some("unmuted")));
 
-    send(&mut s, json!({"type": "invoke", "request_id": "r1", "instance_id": "i1", "action_id": mute, "trigger": "press", "inputs": {}}));
-    assert_eq!(expect(&mut s, "ack")["request_id"], "r1");
-    let fan = expect(&mut s, "state");
+    h.send(json!({"type": "invoke", "id": "r1", "instance_id": "i1", "action_id": mute, "trigger": "press", "inputs": {}}));
+    assert_eq!(h.expect("ack")["id"], "r1");
+    let fan = h.expect_where("state", |m| m["action_id"] == mute.as_str());
     assert_eq!((fan["action_id"].as_str(), fan["state"].as_str()), (Some(mute.as_str()), Some("muted")));
 
-    send(&mut s, json!({"type": "query", "request_id": "q1", "query_id": "items", "inputs": {"group": "fruit"}}));
-    assert_eq!(expect(&mut s, "query_result")["result"], json!(["apple", "pear"]));
+    // ping's handler println!s; that must not reach the protocol stream.
+    h.send(json!({"type": "invoke", "id": "r2", "instance_id": "p1", "action_id": ping, "trigger": "press", "inputs": {}}));
+    assert_eq!(h.expect("ack")["id"], "r2");
 
-    // An action that fails reports an error frame and no panic.
+    // Same-instance invokes are handled in order.
+    for (i, v) in [10, 20, 30, 40, 50].iter().enumerate() {
+        h.send(json!({"type": "invoke", "id": format!("s{i}"), "instance_id": "v1", "action_id": volume, "trigger": "adjust", "inputs": {"value": v}}));
+    }
+    let mut seen = Vec::new();
+    while seen.len() < 5 {
+        let m = h.expect_where("state", |m| m["instance_id"] == "v1");
+        seen.push(m["state"].as_str().unwrap().to_string());
+    }
+    assert_eq!(seen, ["10", "20", "30", "40", "50"]);
+
+    h.send(json!({"type": "request", "id": "q1", "method": "query", "params": {"query_id": "items", "inputs": {"group": "fruit"}}}));
+    let res = h.expect("result");
+    assert_eq!((res["id"].as_str(), res["ok"].as_bool()), (Some("q1"), Some(true)));
+    assert_eq!(res["value"], json!(["apple", "pear"]));
+
+    h.send(json!({"type": "request", "id": "q2", "method": "query", "params": {"query_id": "nope"}}));
+    let res = h.expect("result");
+    assert_eq!((res["ok"].as_bool(), res["error"].as_str()), (Some(false), Some("unknown query \"nope\"")));
+
+    // A failing action reports an error message and no panic.
     let pick = arclet_sdk::make_full_id("example-rust", "pick");
-    send(&mut s, json!({"type": "invoke", "request_id": "r2", "instance_id": "i2", "action_id": pick, "trigger": "press", "inputs": {}}));
-    assert_eq!(expect(&mut s, "error")["message"], "demo error");
+    h.send(json!({"type": "invoke", "id": "r3", "instance_id": "i2", "action_id": pick, "trigger": "press", "inputs": {}}));
+    assert_eq!(h.expect("error")["message"], "demo error");
 
-    child.kill().ok();
+    // Unknown message types are ignored.
+    h.send(json!({"type": "from_the_future"}));
+
+    h.send(json!({"type": "shutdown"}));
+    let status = wait_exit(&mut h.child);
+    assert!(status.success());
+    assert!(dir.join("shutdown.txt").exists(), "on_shutdown ran");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn setup_required_carries_reason() {
+    let dir = tempfile_dir("setup");
+    let mut h = Host::start(&dir);
+    h.expect("ready");
+    let expire = arclet_sdk::make_full_id("example-rust", "expire");
+    h.send(json!({"type": "invoke", "id": "r1", "instance_id": "e1", "action_id": expire, "trigger": "press", "inputs": {}}));
+    let m = h.expect("setup_required");
+    assert_eq!(m["reason"], "demo token expired");
+    drop(h.stdin);
+    assert!(wait_exit(&mut h.child).success(), "exits cleanly on stdin EOF");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -111,8 +150,26 @@ fn codegen_emits_manifest_and_actions() {
     assert!(out.status.success());
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["manifest"]["id"], "example-rust");
+    assert_eq!(v["manifest"]["protocol"], 2);
     assert!(v["manifest"]["runtime"].get("language").is_none());
     let actions = v["actions"]["actions"].as_array().unwrap();
     assert_eq!(actions[0]["id"], arclet_sdk::make_full_id("example-rust", "ping"));
     assert_eq!(actions.iter().find(|a| a["type"] == "slider").unwrap()["max"], 100.0);
+}
+
+fn tempfile_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("arclet-sdk-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn wait_exit(child: &mut Child) -> std::process::ExitStatus {
+    for _ in 0..100 {
+        if let Some(s) = child.try_wait().unwrap() {
+            return s;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    child.kill().ok();
+    panic!("plugin did not exit");
 }

@@ -15,6 +15,7 @@ fn main() {
                 .inputs(vec![input::text("message", "Message").placeholder("hello")])
                 .on_press(|ctx| {
                     ctx.log(format!("ping instance={} inputs={}", ctx.instance_id, ctx.inputs));
+                    println!("stray stdout write"); // lands in the log, not the protocol stream
                     Ok(())
                 }),
         )
@@ -47,6 +48,10 @@ fn main() {
                 input::query_select("item", "Item", "items", &["group"]),
             ]).on_press(|ctx| ctx.fail("demo error")),
         )
+        .action(
+            Action::button("expire", "Expire token (setup demo)")
+                .on_press(|ctx| Ok(ctx.mark_setup_required("demo token expired"))),
+        )
         .query("groups", |_| Ok(json!([{"value": "fruit", "label": "Fruit"}, {"value": "veg", "label": "Veg"}])))
         .query("items", |ctx| {
             Ok(match ctx.input_str("group").as_str() {
@@ -65,6 +70,9 @@ fn main() {
                 }
             });
             Ok(())
+        })
+        .on_shutdown(|rt| {
+            let _ = std::fs::write(rt.data_dir().join("shutdown.txt"), "bye");
         })
         .run()
 }

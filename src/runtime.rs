@@ -1,26 +1,33 @@
-//! Plugin runtime: connects to the host over WebSocket, registers, and routes
-//! `sync` / `invoke` / `query` / `get_wheel` / `event` / `host_result` frames.
-//! Every invoke / query / wheel / event runs on its own thread, so slow handlers
-//! never block the socket reader (the Rust analogue of async handlers in JS).
+//! Plugin runtime: protocol v2 over stdio. The host writes one JSON object per
+//! line to our stdin (`hello`, `sync`, `invoke`, `request`, `event`, `result`,
+//! `shutdown`); we answer on stdout (`ready`, `ack`, `state`, `error`, `result`,
+//! `host_call`, `subscribe`, `setup_required`). Logs go to stderr, which the
+//! host writes to the plugin's log file.
+//!
+//! Handlers for the same instance run in order on that instance's worker
+//! thread (a slider never applies 30 after 50); different instances, queries
+//! and events run in parallel, so a slow handler never blocks the reader.
 
 use crate::codegen::make_full_id;
 use crate::ctx::{Ctx, Event, InitialCtx, OpenCtx, QueryCtx};
 use crate::error::{Error, Result};
 use crate::log::log;
 use crate::plugin::{Action, Kind, Plugin};
-use crate::ws::{self, Frame};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::io::{BufRead, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-const HOST: &str = "127.0.0.1";
+/// Protocol version this SDK speaks.
+pub const PROTOCOL: u32 = 2;
 const MAX_WHEEL_BUTTONS: usize = 16;
+/// An idle per-instance worker thread exits after this long.
+const WORKER_IDLE: Duration = Duration::from_secs(30);
 
 /// Partial visual update for one instance. Fields left `None` are not sent; a
 /// patch without `state` leaves the instance's state/error untouched.
@@ -65,8 +72,11 @@ impl Visual {
     }
 }
 
+type Job = Box<dyn FnOnce() + Send>;
+
 pub(crate) struct Inner {
-    writer: Mutex<Option<TcpStream>>,
+    out: Mutex<Box<dyn Write + Send>>,
+    data_dir: PathBuf,
     state: Mutex<HashMap<String, String>>,
     action_of: Mutex<HashMap<String, String>>,
     inputs_of: Mutex<HashMap<String, Value>>,
@@ -74,6 +84,8 @@ pub(crate) struct Inner {
     full_to_short: HashMap<String, String>,
     pending: Mutex<HashMap<String, Sender<std::result::Result<Value, String>>>>,
     next_id: AtomicU64,
+    /// instance id → its ordered worker's queue.
+    workers: Mutex<HashMap<String, Sender<Job>>>,
 }
 
 /// Handle for pushing state/visuals/errors outside of a handler (timers, pollers,
@@ -92,10 +104,16 @@ impl Runtime {
         log(msg)
     }
 
+    /// This plugin's persistent data folder (`%APPDATA%\Arclet\plugin-data\<id>`).
+    /// Survives plugin updates and reinstalls: keep tokens and settings here.
+    pub fn data_dir(&self) -> &Path {
+        &self.0.data_dir
+    }
+
     pub(crate) fn send(&self, obj: Value) {
-        let frame = ws::encode_text(&obj.to_string());
-        if let Some(w) = self.0.writer.lock().unwrap().as_mut() {
-            if let Err(e) = w.write_all(&frame) {
+        {
+            let mut out = self.0.out.lock().unwrap();
+            if let Err(e) = writeln!(out, "{obj}").and_then(|_| out.flush()) {
                 log(format!("send error: {e}"));
             }
         }
@@ -145,11 +163,11 @@ impl Runtime {
             self.send(json!({"type": "subscribe", "events": names}));
         }
     }
-    /// Flag the plugin as needing setup again (writes `setup_required` to
-    /// manifest.json and tells the host immediately).
-    pub fn mark_setup_required(&self) {
-        crate::mark_setup_required();
-        self.send(json!({"type": "setup_required"}));
+    /// Tell the host this plugin needs setup again (expired token, revoked
+    /// auth…). The host remembers it, stops the plugin and asks the user to run
+    /// setup; `reason` is shown to them.
+    pub fn mark_setup_required(&self, reason: impl ToString) {
+        self.send(json!({"type": "setup_required", "reason": reason.to_string()}));
     }
     /// Instance ids of every placed instance of `action_id` (short id) learned from sync.
     pub fn instances_of(&self, action_id: &str) -> Vec<String> {
@@ -171,7 +189,7 @@ impl Runtime {
         let id = format!("host-{}", self.0.next_id.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = channel();
         self.0.pending.lock().unwrap().insert(id.clone(), tx);
-        self.send(json!({"type": "host_call", "request_id": id, "method": method, "params": params}));
+        self.send(json!({"type": "host_call", "id": id, "method": method, "params": params}));
         match rx.recv_timeout(Duration::from_secs(30)) {
             Ok(Ok(v)) => Ok(v),
             Ok(Err(e)) => Err(Error::Other(e)),
@@ -192,10 +210,6 @@ fn normalize(events: impl Iterator<Item = String>) -> Vec<String> {
         }
     }
     out
-}
-
-fn arg(args: &[String], key: &str) -> Option<String> {
-    args.iter().position(|a| a == key).and_then(|i| args.get(i + 1)).cloned()
 }
 
 fn compute_initial(def: Option<&Action>, ic: &InitialCtx) -> String {
@@ -238,17 +252,60 @@ impl Core {
     }
 }
 
+/// Take the real stdout for the protocol and point the process's stdout at
+/// stderr, so a stray `println!` in plugin code lands in the log instead of
+/// corrupting the message stream.
+#[cfg(windows)]
+fn take_protocol_stdout() -> Box<dyn Write + Send> {
+    use std::os::windows::io::FromRawHandle;
+    type Handle = *mut std::ffi::c_void;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetStdHandle(which: u32) -> Handle;
+        fn SetStdHandle(which: u32, handle: Handle) -> i32;
+    }
+    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+    const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+    unsafe {
+        let out = GetStdHandle(STD_OUTPUT_HANDLE);
+        if out.is_null() || out as isize == -1 {
+            return Box::new(std::io::stdout());
+        }
+        // std's stdout looks the handle up on every write, so this takes effect at once.
+        SetStdHandle(STD_OUTPUT_HANDLE, GetStdHandle(STD_ERROR_HANDLE));
+        Box::new(std::fs::File::from_raw_handle(out))
+    }
+}
+
+// shortcut: no stdout redirection off Windows (needs dup/dup2); add it if plugins ship there.
+#[cfg(not(windows))]
+fn take_protocol_stdout() -> Box<dyn Write + Send> {
+    Box::new(std::io::stdout())
+}
+
 pub(crate) fn run(plugin: Plugin) -> ! {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let port: u16 = match arg(&args, "--port").and_then(|p| p.parse().ok()) {
-        Some(p) => p,
-        None => {
-            eprintln!("Arclet SDK: --port is required for plugins");
-            std::process::exit(1)
+    let out = take_protocol_stdout();
+    // Panics inside handler threads are caught per-thread; log them.
+    std::panic::set_hook(Box::new(|info| log(format!("panic: {info}"))));
+
+    let mut lines = std::io::stdin().lock().lines();
+    let hello = loop {
+        match lines.next() {
+            Some(Ok(line)) => match serde_json::from_str::<Value>(&line) {
+                Ok(v) if v["type"] == "hello" => break v,
+                _ => log(format!("expected hello, got: {line}")),
+            },
+            _ => {
+                log("stdin closed before hello (run plugins from Arclet, not directly)");
+                std::process::exit(1)
+            }
         }
     };
-    let plugin_id = arg(&args, "--plugin-id").filter(|s| !s.is_empty()).unwrap_or_else(|| plugin.meta.id.clone());
-    let token = arg(&args, "--token").unwrap_or_default();
+    if hello["protocol"] != PROTOCOL {
+        log(format!("host speaks protocol {}, this SDK speaks {PROTOCOL}", hello["protocol"]));
+    }
+    let plugin_id = hello["plugin_id"].as_str().filter(|s| !s.is_empty()).unwrap_or(&plugin.meta.id).to_string();
+    let data_dir = hello["data_dir"].as_str().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
 
     let mut short_to_full = HashMap::new();
     let mut full_to_short = HashMap::new();
@@ -258,20 +315,9 @@ pub(crate) fn run(plugin: Plugin) -> ! {
         full_to_short.insert(full, short.clone());
     }
 
-    let addr = (HOST, port).to_socket_addrs().ok().and_then(|mut a| a.next()).expect("resolve host");
-    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_secs(10)) {
-        Ok(s) => s,
-        Err(e) => {
-            log(format!("connect error: {e}"));
-            std::process::exit(1)
-        }
-    };
-    let _ = stream.set_nodelay(true);
-    let mut reader = stream.try_clone().expect("clone socket");
-    stream.write_all(ws::handshake_request(HOST, port).as_bytes()).expect("handshake");
-
     let rt = Runtime(Arc::new(Inner {
-        writer: Mutex::new(Some(stream)),
+        out: Mutex::new(out),
+        data_dir,
         state: Default::default(),
         action_of: Default::default(),
         inputs_of: Default::default(),
@@ -279,70 +325,87 @@ pub(crate) fn run(plugin: Plugin) -> ! {
         full_to_short,
         pending: Default::default(),
         next_id: AtomicU64::new(1),
+        workers: Default::default(),
     }));
     let _ = RUNTIME.set(rt.clone());
 
-    // Panics inside handler threads are caught per-thread; keep the default
-    // stderr noise out of the host and in log.txt instead.
-    std::panic::set_hook(Box::new(|info| log(format!("panic: {info}"))));
+    let mut wanted = plugin.subscriptions.clone();
+    if plugin.actions.values().any(|a| a.volatile) {
+        wanted.push("focus_changed".into());
+    }
+    rt.send(json!({"type": "ready", "protocol": PROTOCOL, "subscribe": normalize(wanted.into_iter())}));
+    log("ready");
 
-    let core = Arc::new(Core { plugin, rt: rt.clone() });
-    let mut buf: Vec<u8> = Vec::new();
-    let mut upgraded = false;
-    let mut chunk = [0u8; 16384];
-
-    loop {
-        let n = match reader.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => n,
-        };
-        buf.extend_from_slice(&chunk[..n]);
-
-        if !upgraded {
-            let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
-            upgraded = true;
-            buf.drain(..end + 4);
-            // register MUST be the first WS frame
-            rt.send(json!({"type": "register", "plugin": plugin_id, "token": token}));
-            let mut wanted = core.plugin.subscriptions.clone();
-            if core.plugin.actions.values().any(|a| a.volatile) {
-                wanted.push("focus_changed".into());
-            }
-            let wanted = normalize(wanted.into_iter());
-            if !wanted.is_empty() {
-                rt.send(json!({"type": "subscribe", "events": wanted}));
-            }
-            log("registered");
-        }
-
-        for frame in ws::parse_frames(&mut buf) {
-            match frame {
-                Frame::Close => finish(&rt),
-                Frame::Ping(p) => {
-                    if let Some(w) = rt.0.writer.lock().unwrap().as_mut() {
-                        let _ = w.write_all(&ws::encode_pong(&p));
-                    }
-                }
-                Frame::Json(msg) => dispatch(&core, msg),
-            }
+    let core = Arc::new(Core { plugin, rt });
+    for line in lines {
+        let Ok(line) = line else { break };
+        match serde_json::from_str::<Value>(&line) {
+            Ok(msg) if msg["type"] == "shutdown" => break,
+            Ok(msg) => dispatch(&core, msg),
+            Err(e) => log(format!("bad line from host ({e}): {line}")),
         }
     }
-    finish(&rt)
+    finish(&core)
 }
 
-fn finish(rt: &Runtime) -> ! {
-    for (_, tx) in rt.0.pending.lock().unwrap().drain() {
-        let _ = tx.send(Err("Arclet host bridge disconnected".into()));
+fn finish(core: &Core) -> ! {
+    for (_, tx) in core.rt.0.pending.lock().unwrap().drain() {
+        let _ = tx.send(Err("Arclet host disconnected".into()));
     }
-    log("disconnected");
+    if let Some(f) = &core.plugin.on_shutdown {
+        if catch_unwind(AssertUnwindSafe(|| f(&core.rt))).is_err() {
+            log("on_shutdown panicked");
+        }
+    }
+    log("shutdown");
     std::process::exit(0)
 }
 
 /// Run `f` on its own thread, converting panics into a logged message.
 fn spawn(what: &'static str, f: impl FnOnce() + Send + 'static) {
-    std::thread::spawn(move || {
-        if catch_unwind(AssertUnwindSafe(f)).is_err() {
-            log(format!("{what}: handler panicked"));
+    std::thread::spawn(move || run_caught(what, f));
+}
+
+fn run_caught(what: &str, f: impl FnOnce()) {
+    if catch_unwind(AssertUnwindSafe(f)).is_err() {
+        log(format!("{what}: handler panicked"));
+    }
+}
+
+/// Run `job` after every job already queued for `key`, on that key's worker
+/// thread (started on demand, exits after `WORKER_IDLE`).
+fn run_ordered(rt: &Runtime, key: String, job: Job) {
+    let mut workers = rt.0.workers.lock().unwrap();
+    let job = match workers.get(&key) {
+        Some(tx) => match tx.send(job) {
+            Ok(()) => return,
+            Err(e) => e.0,
+        },
+        None => job,
+    };
+    let (tx, rx) = channel::<Job>();
+    let _ = tx.send(job);
+    workers.insert(key.clone(), tx);
+    drop(workers);
+    let rt = rt.clone();
+    std::thread::spawn(move || loop {
+        match rx.recv_timeout(WORKER_IDLE) {
+            Ok(job) => run_caught("invoke", job),
+            Err(RecvTimeoutError::Timeout) => {
+                // Senders enqueue under this lock, so nothing can slip in after the check.
+                let mut workers = rt.0.workers.lock().unwrap();
+                match rx.try_recv() {
+                    Ok(job) => {
+                        drop(workers);
+                        run_caught("invoke", job);
+                    }
+                    Err(_) => {
+                        workers.remove(&key);
+                        return;
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => return,
         }
     });
 }
@@ -352,23 +415,28 @@ fn dispatch(core: &Arc<Core>, msg: Value) {
     match msg["type"].as_str().unwrap_or("") {
         "sync" => handle_sync(core, &msg),
         "invoke" => {
-            // ACK IMMEDIATELY on the reader thread, before any handler work.
-            core.rt.send(json!({"type": "ack", "request_id": msg["request_id"]}));
-            spawn("invoke", move || handle_invoke(&c, msg));
+            // Ack immediately on the reader thread, before any handler work.
+            core.rt.send(json!({"type": "ack", "id": msg["id"]}));
+            let key = msg["instance_id"].as_str().unwrap_or("").to_string();
+            run_ordered(&core.rt, key, Box::new(move || handle_invoke(&c, msg)));
         }
-        "query" => spawn("query", move || handle_query(&c, msg)),
-        "get_wheel" => spawn("get_wheel", move || handle_get_wheel(&c, msg)),
+        "request" => match msg["method"].as_str().unwrap_or("") {
+            "query" => spawn("query", move || handle_query(&c, &msg)),
+            "wheel" => spawn("wheel", move || handle_wheel(&c, &msg)),
+            other => core.rt.send(json!({"type": "result", "id": msg["id"], "ok": false, "error": format!("unknown request method \"{other}\"")})),
+        },
         "event" => handle_event(core, msg),
-        "host_result" => {
-            let Some(id) = msg["request_id"].as_str() else { return };
+        "result" => {
+            let Some(id) = msg["id"].as_str() else { return };
             if let Some(tx) = core.rt.0.pending.lock().unwrap().remove(id) {
-                let _ = tx.send(match msg["error"].as_str() {
-                    Some(e) => Err(e.into()),
-                    None => Ok(msg.get("result").cloned().unwrap_or(Value::Null)),
+                let _ = tx.send(if msg["ok"] == true {
+                    Ok(msg.get("value").cloned().unwrap_or(Value::Null))
+                } else {
+                    Err(msg["error"].as_str().unwrap_or("host call failed").into())
                 });
             }
         }
-        _ => {}
+        _ => {} // forward compatibility
     }
 }
 
@@ -532,62 +600,56 @@ fn num(v: &Value) -> Option<f64> {
     v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
 }
 
-fn handle_query(core: &Arc<Core>, msg: Value) {
-    let rid = msg["request_id"].clone();
-    let qid = msg["query_id"].as_str().unwrap_or("");
-    let Some(provider) = core.plugin.queries.get(qid) else {
-        log(format!("unknown query: {qid}"));
-        core.rt.send(json!({"type": "query_result", "request_id": rid, "error": format!("unknown query \"{qid}\"")}));
-        return;
-    };
-    let ctx = QueryCtx {
-        inputs: obj_or_empty(&msg["inputs"]),
-        fg_process: opt_str(&msg["fg_process"]),
-        fg_title: opt_str(&msg["fg_title"]),
-    };
-    core.rt.send(match provider(&ctx) {
-        Ok(v) => json!({"type": "query_result", "request_id": rid, "result": v}),
+fn reply(core: &Core, id: &Value, outcome: Result<Value>, what: &str) {
+    core.rt.send(match outcome {
+        Ok(v) => json!({"type": "result", "id": id, "ok": true, "value": v}),
         Err(e) => {
             if let Error::Other(m) = &e {
-                log(format!("query error ({qid}): {m}"));
+                log(format!("{what} error: {m}"));
             }
-            json!({"type": "query_result", "request_id": rid, "error": e.message()})
+            json!({"type": "result", "id": id, "ok": false, "error": e.message()})
         }
     });
 }
 
-fn handle_get_wheel(core: &Arc<Core>, msg: Value) {
-    let rid = msg["request_id"].clone();
-    let action_id = core.short(msg["action_id"].as_str().unwrap_or(""));
+fn handle_query(core: &Arc<Core>, msg: &Value) {
+    let p = &msg["params"];
+    let qid = p["query_id"].as_str().unwrap_or("");
+    let outcome = match core.plugin.queries.get(qid) {
+        None => Err(Error::msg(format!("unknown query \"{qid}\""))),
+        Some(provider) => provider(&QueryCtx {
+            inputs: obj_or_empty(&p["inputs"]),
+            fg_process: opt_str(&p["fg_process"]),
+            fg_title: opt_str(&p["fg_title"]),
+        }),
+    };
+    reply(core, &msg["id"], outcome, &format!("query ({qid})"));
+}
+
+fn handle_wheel(core: &Arc<Core>, msg: &Value) {
+    let p = &msg["params"];
+    let action_id = core.short(p["action_id"].as_str().unwrap_or(""));
     let Some(handler) = core.action(&action_id).and_then(|d| d.on_open.as_ref()) else {
-        log(format!("unknown wheel action: {action_id}"));
-        core.rt.send(json!({"type": "wheel_result", "request_id": rid, "error": format!("unknown wheel action \"{action_id}\"")}));
+        reply(core, &msg["id"], Err(Error::msg(format!("unknown wheel action \"{action_id}\""))), "wheel");
         return;
     };
-    if let Some(iid) = msg["instance_id"].as_str() {
+    if let Some(iid) = p["instance_id"].as_str() {
         core.rt.0.action_of.lock().unwrap().insert(iid.into(), action_id.clone());
     }
-    let ctx = OpenCtx {
-        inputs: obj_or_empty(&msg["inputs"]),
-        fg_process: opt_str(&msg["fg_process"]),
-        fg_title: opt_str(&msg["fg_title"]),
-    };
-    core.rt.send(match handler(&ctx) {
-        Ok(mut slices) => {
-            if slices.len() > MAX_WHEEL_BUTTONS {
-                log(format!(
-                    "on_open() for wheel \"{action_id}\" returned {} slices — truncated to {MAX_WHEEL_BUTTONS}",
-                    slices.len()
-                ));
-                slices.truncate(MAX_WHEEL_BUTTONS);
-            }
-            json!({"type": "wheel_result", "request_id": rid, "wheel": {"mode": "buttons", "slices": slices}})
+    let outcome = handler(&OpenCtx {
+        inputs: obj_or_empty(&p["inputs"]),
+        fg_process: opt_str(&p["fg_process"]),
+        fg_title: opt_str(&p["fg_title"]),
+    })
+    .map(|mut slices| {
+        if slices.len() > MAX_WHEEL_BUTTONS {
+            log(format!(
+                "on_open() for wheel \"{action_id}\" returned {} slices — truncated to {MAX_WHEEL_BUTTONS}",
+                slices.len()
+            ));
+            slices.truncate(MAX_WHEEL_BUTTONS);
         }
-        Err(e) => {
-            if let Error::Other(m) = &e {
-                log(format!("on_open error ({action_id}): {m}"));
-            }
-            json!({"type": "wheel_result", "request_id": rid, "error": e.message()})
-        }
+        json!({"mode": "buttons", "slices": slices})
     });
+    reply(core, &msg["id"], outcome, &format!("on_open ({action_id})"));
 }

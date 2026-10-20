@@ -53,6 +53,7 @@ pub fn generate_manifest(p: &Plugin, stage: Stage) -> Value {
     let mut manifest = Map::new();
     manifest.insert("id".into(), m.id.clone().into());
     manifest.insert("name".into(), m.name.clone().into());
+    manifest.insert("protocol".into(), crate::runtime::PROTOCOL.into());
     manifest.insert("runtime".into(), Value::Object(runtime));
     for (k, v) in [("icon", &m.icon), ("version", &m.version), ("author", &m.author), ("description", &m.description)] {
         if let Some(v) = v {
@@ -177,5 +178,12 @@ mod tests {
         // Value computed with the JS SDK's makeFullId('discord', 'mute').
         assert_eq!(make_full_id("discord", "mute"), "discord-mute-b094f5e1");
         assert_eq!(make_full_id("", "mute"), "mute");
+    }
+
+    /// Placed slices store these ids; they must never change.
+    #[test]
+    fn full_ids_are_pinned() {
+        assert_eq!(make_full_id("example-rust", "mute"), "example-rust-mute-b1c2189c");
+        assert_eq!(make_full_id("win-tools", "always-on-top"), "win-tools-always-on-top-7ee2f192");
     }
 }

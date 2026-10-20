@@ -1,6 +1,7 @@
 //! Standalone setup program support. Arclet runs the setup binary once when the
 //! user clicks Setup, with the collected fields in `ARCLET_SETUP_INPUTS` (JSON).
-//! Returning `Ok` → exit 0 → the plugin is marked ready; `Err` → exit 1.
+//! Returning `Ok` → exit 0 → the host marks setup complete; `Err` → exit 1.
+//! Save credentials under [`crate::data_dir`] (`ARCLET_PLUGIN_DATA`).
 
 use crate::ctx::input_readers;
 use crate::error::{Error, Result};
@@ -17,17 +18,16 @@ impl SetupCtx {
     pub fn log(&self, msg: impl AsRef<str>) {
         log(msg)
     }
+    /// The plugin's persistent data folder (same one the plugin sees).
+    pub fn data_dir(&self) -> std::path::PathBuf {
+        crate::data_dir()
+    }
     /// Print `message` to stderr (shown by the host) and fail setup.
     pub fn fail<T>(&self, message: impl ToString) -> Result<T> {
         let m = message.to_string();
         eprintln!("{m}");
         Err(Error::Fail(m))
     }
-}
-
-/// Flip `setup_required` to false in `manifest.json` (cwd = plugin folder).
-fn mark_setup_complete() {
-    let _ = crate::set_setup_required(false);
 }
 
 /// Run a setup program: `fn main() { arclet_sdk::run_setup(|ctx| { …; Ok(()) }) }`.
@@ -45,7 +45,6 @@ pub fn run_setup(run: impl FnOnce(&SetupCtx) -> Result) -> ! {
     };
     match run(&SetupCtx { inputs }) {
         Ok(()) => {
-            mark_setup_complete();
             log("setup: complete");
             std::process::exit(0)
         }

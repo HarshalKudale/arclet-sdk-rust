@@ -27,6 +27,7 @@ pub(crate) type OpenFn = Arc<dyn Fn(&OpenCtx) -> Result<Vec<Value>> + Send + Syn
 pub(crate) type QueryFn = Arc<dyn Fn(&QueryCtx) -> Result<Value> + Send + Sync>;
 pub(crate) type ReadyFn = Arc<dyn Fn(&Runtime) -> Result + Send + Sync>;
 pub(crate) type EventFn = Arc<dyn Fn(&Event, &Runtime) -> Result + Send + Sync>;
+pub(crate) type ShutdownFn = Arc<dyn Fn(&Runtime) + Send + Sync>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -239,6 +240,7 @@ pub struct Plugin {
     pub(crate) queries: HashMap<String, QueryFn>,
     pub(crate) on_ready: Option<ReadyFn>,
     pub(crate) on_event: Option<EventFn>,
+    pub(crate) on_shutdown: Option<ShutdownFn>,
     pub(crate) subscriptions: Vec<String>,
     pub(crate) ready_fired: AtomicBool,
 }
@@ -254,6 +256,7 @@ impl Plugin {
             queries: HashMap::new(),
             on_ready: None,
             on_event: None,
+            on_shutdown: None,
             subscriptions: vec![],
             ready_fired: AtomicBool::new(false),
         }
@@ -358,6 +361,14 @@ impl Plugin {
         self
     }
 
+    /// Runs once when the host stops the plugin (or Arclet exits cleanly):
+    /// flush state, close connections. Keep it short — the host kills the
+    /// process 2 s after asking it to stop.
+    pub fn on_shutdown(mut self, f: impl Fn(&Runtime) + Send + Sync + 'static) -> Self {
+        self.on_shutdown = Some(Arc::new(f));
+        self
+    }
+
     /// `{ manifest, actions }` as the CLI writes them.
     pub fn to_json(&self, stage: Stage) -> std::result::Result<(Value, Value), String> {
         Ok((generate_manifest(self, stage), generate_actions(self)?))
@@ -365,7 +376,7 @@ impl Plugin {
 
     /// Start the plugin. Under `ARCLET_CODEGEN=1` it prints the generated
     /// `{manifest, actions}` JSON to stdout and exits instead (used by the CLI);
-    /// otherwise it connects to the host and never returns.
+    /// otherwise it talks to the host over stdio and never returns.
     pub fn run(self) -> ! {
         if std::env::var("ARCLET_CODEGEN").as_deref() == Ok("1") {
             let stage = if std::env::var("ARCLET_STAGE").as_deref() == Ok("build") { Stage::Build } else { Stage::Dev };
