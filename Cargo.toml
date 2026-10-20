@@ -1,0 +1,16 @@
+[package]
+name = "arclet-sdk"
+version = "0.2.0"
+edition = "2021"
+description = "Declarative Rust SDK for authoring Arclet plugins"
+license = "MIT"
+repository = "https://github.com/HarshalKudale/arclet-sdk-rust"
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+sha1 = "0.10"
+getrandom = "0.2"
+
+[[bin]]
+name = "arclet-plugin"
+path = "src/bin/arclet-plugin.rs"
