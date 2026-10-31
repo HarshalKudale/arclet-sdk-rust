@@ -16,17 +16,19 @@
 use crate::codegen::{generate_actions, generate_manifest, Stage};
 use crate::ctx::{Ctx, Event, InitialCtx, OpenCtx, QueryCtx};
 use crate::error::Result;
-use crate::runtime::Runtime;
+use crate::runtime::{Runtime, Visual};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub type Handler = Arc<dyn Fn(&Ctx) -> Result + Send + Sync>;
 pub(crate) type OpenFn = Arc<dyn Fn(&OpenCtx) -> Result<Vec<Value>> + Send + Sync>;
 pub(crate) type QueryFn = Arc<dyn Fn(&QueryCtx) -> Result<Value> + Send + Sync>;
 pub(crate) type ReadyFn = Arc<dyn Fn(&Runtime) -> Result + Send + Sync>;
 pub(crate) type EventFn = Arc<dyn Fn(&Event, &Runtime) -> Result + Send + Sync>;
+pub(crate) type LiveFn = Arc<dyn Fn(&InitialCtx) -> Result<Visual> + Send + Sync>;
 pub(crate) type ShutdownFn = Arc<dyn Fn(&Runtime) + Send + Sync>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -87,6 +89,7 @@ pub struct Action {
     pub(crate) on_adjust: Option<Handler>,
     pub(crate) on_child_press: Option<Handler>,
     pub(crate) on_open: Option<OpenFn>,
+    pub(crate) live: Option<(Duration, LiveFn)>,
 }
 
 fn handler(f: impl Fn(&Ctx) -> Result + Send + Sync + 'static) -> Option<Handler> {
@@ -116,6 +119,7 @@ impl Action {
             on_adjust: None,
             on_child_press: None,
             on_open: None,
+            live: None,
         }
     }
 
@@ -207,6 +211,14 @@ impl Action {
     /// Wheel: build the slices (`{ id, label?, icon? }`, max 16) on every open.
     pub fn on_open(mut self, f: impl Fn(&OpenCtx) -> Result<Vec<Value>> + Send + Sync + 'static) -> Self {
         self.on_open = Some(Arc::new(f));
+        self
+    }
+    /// Live content (Stream Deck-style stats): every `every`, `f` runs for each
+    /// placed instance and its label/icon are pushed when they change. The
+    /// action itself is unchanged; while the plugin is not running, the tile
+    /// shows its configured icon and label. `state` in the returned `Visual` is ignored.
+    pub fn live(mut self, every: Duration, f: impl Fn(&InitialCtx) -> Result<Visual> + Send + Sync + 'static) -> Self {
+        self.live = Some((every, Arc::new(f)));
         self
     }
     /// Wheel: a button child was pressed (`ctx.child_id`).

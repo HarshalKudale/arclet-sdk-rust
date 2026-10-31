@@ -48,6 +48,10 @@ arclet-plugin package   # dist/<id>.arclet
 
 `.volatile()` re-computes the initial state on every sync / focus change. `.icon()` and `.inputs()` apply to all.
 
+`.live(every, |ic| Ok(Visual::new().label(..).icon(..)))` gives any action Stream Deck-style live content: it runs every `every` for each placed instance (`ic.input_str(..)` reads its inputs) and pushes the label/icon when they change. The action and its press handler stay as they are, and while the plugin is not running the tile shows its configured icon and label.
+
+An icon is a [Lucide](https://lucide.dev/icons) name (`"play"`), an image file in the plugin's `icons/` folder (`"mute.svg"`), or a `data:` URI. Emoji and `icon:` pack refs are not rendered by the host.
+
 ## Handlers and context
 
 Handlers are `Fn(&Ctx) -> arclet_sdk::Result`. `?` works on any `std::error::Error`; an error that

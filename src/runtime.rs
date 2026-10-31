@@ -12,7 +12,7 @@ use crate::codegen::make_full_id;
 use crate::ctx::{Ctx, Event, InitialCtx, OpenCtx, QueryCtx};
 use crate::error::{Error, Result};
 use crate::log::log;
-use crate::plugin::{Action, Kind, Plugin};
+use crate::plugin::{Action, Kind, LiveFn, Plugin};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
@@ -341,6 +341,11 @@ pub(crate) fn run(plugin: Plugin) -> ! {
     rt.send(json!({"type": "ready", "protocol": PROTOCOL, "subscribe": normalize(wanted.into_iter())}));
     log("ready");
 
+    for (short, def) in &plugin.actions {
+        if let Some((every, f)) = &def.live {
+            start_live(rt.clone(), short.clone(), *every, f.clone());
+        }
+    }
     let core = Arc::new(Core { plugin, rt });
     for line in lines {
         let Ok(line) = line else { break };
@@ -411,6 +416,47 @@ fn run_ordered(rt: &Runtime, key: String, job: Job) {
                 }
             }
             Err(RecvTimeoutError::Disconnected) => return,
+        }
+    });
+}
+
+/// Poll `f` for every placed instance of `action` and push label/icon changes.
+fn start_live(rt: Runtime, action: String, every: Duration, f: LiveFn) {
+    spawn("live", move || {
+        let mut sent: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
+        let mut failed: HashMap<String, String> = HashMap::new();
+        loop {
+            let ids = rt.instances_of(&action);
+            sent.retain(|k, _| ids.contains(k));
+            failed.retain(|k, _| ids.contains(k));
+            for iid in ids {
+                let ic = InitialCtx {
+                    instance_id: iid.clone(),
+                    action_id: action.clone(),
+                    inputs: rt.inputs_of(&iid),
+                    fg_process: None,
+                    fg_title: None,
+                };
+                match catch_unwind(AssertUnwindSafe(|| f(&ic))) {
+                    Ok(Ok(v)) => {
+                        failed.remove(&iid);
+                        let key = (v.label.clone(), v.icon.clone());
+                        if sent.get(&iid) != Some(&key) {
+                            rt.set_visual(&iid, Visual { state: None, ..v });
+                            sent.insert(iid, key);
+                        }
+                    }
+                    // Log each distinct failure once, not every tick.
+                    Ok(Err(e)) => {
+                        if failed.get(&iid).map(String::as_str) != Some(e.message()) {
+                            log(format!("live ({action}): {}", e.message()));
+                            failed.insert(iid, e.message().to_string());
+                        }
+                    }
+                    Err(_) => log(format!("live ({action}): panicked")),
+                }
+            }
+            std::thread::sleep(every);
         }
     });
 }
