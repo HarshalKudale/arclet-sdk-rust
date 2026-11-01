@@ -1,12 +1,12 @@
-//! `arclet-plugin` — CLI for Rust Arclet plugins (run from the plugin crate folder).
+//! `knobdeck-plugin` — CLI for Rust KnobDeck plugins (run from the plugin crate folder).
 //!
 //!   dev [--skip-setup] [--watch]   cargo build (debug), assemble dist/<id>/ for
 //!                                  "Load Unpacked"; --watch rebuilds on change and
-//!                                  Arclet restarts the plugin when its exe changes
+//!                                  KnobDeck restarts the plugin when its exe changes
 //!   build                          cargo build --release, assemble dist/<id>/
-//!   package                        zip dist/<id>/ into dist/<id>.arclet
+//!   package                        zip dist/<id>/ into dist/<id>.knobdeck
 //!
-//! Codegen runs every built binary with ARCLET_CODEGEN=1; the plugin binary
+//! Codegen runs every built binary with KNOBDECK_CODEGEN=1; the plugin binary
 //! prints { manifest, actions } and the setup binary exits silently.
 
 use serde_json::Value;
@@ -14,7 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const USAGE: &str = "arclet-plugin <dev|build|package>\n\n  dev [--skip-setup] [--watch]  build (debug) + assemble dist/<id>/ for \"Load Unpacked\"\n  build                         build (release) + assemble dist/<id>/\n  package                       zip dist/<id>/ -> dist/<id>.arclet\n";
+const USAGE: &str = "knobdeck-plugin <dev|build|package>\n\n  dev [--skip-setup] [--watch]  build (debug) + assemble dist/<id>/ for \"Load Unpacked\"\n  build                         build (release) + assemble dist/<id>/\n  package                       zip dist/<id>/ -> dist/<id>.knobdeck\n";
 
 fn die(msg: impl std::fmt::Display) -> ! {
     eprintln!("\n  ✗ {msg}");
@@ -59,8 +59,8 @@ fn cargo_build(release: bool) -> Vec<PathBuf> {
 fn codegen(exes: &[PathBuf], stage: &str) -> (PathBuf, Value) {
     for exe in exes {
         let out = Command::new(exe)
-            .env("ARCLET_CODEGEN", "1")
-            .env("ARCLET_STAGE", stage)
+            .env("KNOBDECK_CODEGEN", "1")
+            .env("KNOBDECK_STAGE", stage)
             .stderr(Stdio::inherit())
             .output()
             .unwrap_or_else(|e| die(format!("{}: {e}", exe.display())));
@@ -97,7 +97,7 @@ fn stage_setup_ui(manifest: &mut Value, meta: &Value, dist: &Path) {
     manifest["setup"]["page"] = format!("setup-ui/{}", name.to_string_lossy()).into();
 }
 
-/// Copy a built binary into `dist`. Arclet may be running the previous copy,
+/// Copy a built binary into `dist`. KnobDeck may be running the previous copy,
 /// which Windows won't let us overwrite but will let us rename, so move it aside.
 fn stage_exe(exe: &Path, dist: &Path) {
     let dest = dist.join(exe.file_name().unwrap());
@@ -136,7 +136,7 @@ fn assemble(release: bool, skip_setup: bool) {
     // Both stages ship the binaries inside dist/<id>/: running them out of
     // target/ would lock them against the next cargo build.
     let stage = "build";
-    println!("\n  Arclet Plugin — {}", if release { "build" } else { "dev" });
+    println!("\n  KnobDeck Plugin — {}", if release { "build" } else { "dev" });
     let exes = cargo_build(release);
     let (plugin_exe, mut out) = codegen(&exes, stage);
     let mut manifest = out["manifest"].take();
@@ -174,22 +174,22 @@ fn assemble(release: bool, skip_setup: bool) {
     merge_other_os_executables(&mut manifest, &dist);
     write_json(dist.join("manifest.json"), &manifest);
     write_json(dist.join("actions.json"), &actions);
-    println!("  ✓ dist/{id}/ written{}", if release { "\n  Run \"arclet-plugin package\" to produce a .arclet file." } else { "" });
+    println!("  ✓ dist/{id}/ written{}", if release { "\n  Run \"knobdeck-plugin package\" to produce a .knobdeck file." } else { "" });
 }
 
 fn package() {
     let dirs: Vec<PathBuf> = fs::read_dir("dist")
-        .unwrap_or_else(|_| die("no dist/ — run `arclet-plugin build` first"))
+        .unwrap_or_else(|_| die("no dist/ — run `knobdeck-plugin build` first"))
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.join("manifest.json").is_file())
         .collect();
     let dir = match dirs.as_slice() {
         [d] => d.clone(),
-        [] => die("no dist/<id>/manifest.json — run `arclet-plugin build` first"),
+        [] => die("no dist/<id>/manifest.json — run `knobdeck-plugin build` first"),
         _ => die("multiple plugins under dist/ — remove the stale ones"),
     };
-    let out = Path::new("dist").join(format!("{}.arclet", dir.file_name().unwrap().to_string_lossy()));
+    let out = Path::new("dist").join(format!("{}.knobdeck", dir.file_name().unwrap().to_string_lossy()));
     // bsdtar (ships with Windows 10+, macOS, most Linux) writes zip with --format zip.
     let status = Command::new("tar")
         .args(["--format", "zip", "-cf"])
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn merge_keeps_other_os_and_never_invents_setup() {
-        let dist = std::env::temp_dir().join(format!("arclet-merge-{}", std::process::id()));
+        let dist = std::env::temp_dir().join(format!("knobdeck-merge-{}", std::process::id()));
         fs::create_dir_all(&dist).unwrap();
         fs::write(dist.join("p.exe"), "").unwrap();
         let old = json!({"runtime": {"executables": {"windows": "p.exe", "linux": "gone"}, "executable": "p.exe"}});

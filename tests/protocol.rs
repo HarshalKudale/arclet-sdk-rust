@@ -79,9 +79,9 @@ fn hello_ready_sync_invoke_request_shutdown() {
     let ready = h.expect("ready");
     assert_eq!(ready["protocol"], 2);
 
-    let mute = arclet_sdk::make_full_id("example-rust", "mute");
-    let ping = arclet_sdk::make_full_id("example-rust", "ping");
-    let volume = arclet_sdk::make_full_id("example-rust", "volume");
+    let mute = knobdeck_sdk::make_full_id("example-rust", "mute");
+    let ping = knobdeck_sdk::make_full_id("example-rust", "ping");
+    let volume = knobdeck_sdk::make_full_id("example-rust", "volume");
     h.send(json!({"type": "sync", "instances": [{"instance_id": "i1", "action_id": mute, "inputs": {}}]}));
     let st = h.expect_where("state", |m| m["instance_id"] == "i1");
     assert_eq!((st["instance_id"].as_str(), st["state"].as_str()), (Some("i1"), Some("unmuted")));
@@ -116,7 +116,7 @@ fn hello_ready_sync_invoke_request_shutdown() {
     assert_eq!((res["ok"].as_bool(), res["error"].as_str()), (Some(false), Some("unknown query \"nope\"")));
 
     // A failing action reports an error message and no panic.
-    let pick = arclet_sdk::make_full_id("example-rust", "pick");
+    let pick = knobdeck_sdk::make_full_id("example-rust", "pick");
     h.send(json!({"type": "invoke", "id": "r3", "instance_id": "i2", "action_id": pick, "trigger": "press", "inputs": {}}));
     assert_eq!(h.expect("error")["message"], "demo error");
 
@@ -141,7 +141,7 @@ fn setup_required_carries_reason() {
     let dir = tempfile_dir("setup");
     let mut h = Host::start(&dir);
     h.expect("ready");
-    let expire = arclet_sdk::make_full_id("example-rust", "expire");
+    let expire = knobdeck_sdk::make_full_id("example-rust", "expire");
     h.send(json!({"type": "invoke", "id": "r1", "instance_id": "e1", "action_id": expire, "trigger": "press", "inputs": {}}));
     let m = h.expect("setup_required");
     assert_eq!(m["reason"], "demo token expired");
@@ -152,19 +152,19 @@ fn setup_required_carries_reason() {
 
 #[test]
 fn codegen_emits_manifest_and_actions() {
-    let out = Command::new(demo_exe()).env("ARCLET_CODEGEN", "1").env("ARCLET_STAGE", "build").output().unwrap();
+    let out = Command::new(demo_exe()).env("KNOBDECK_CODEGEN", "1").env("KNOBDECK_STAGE", "build").output().unwrap();
     assert!(out.status.success());
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["manifest"]["id"], "example-rust");
     assert_eq!(v["manifest"]["protocol"], 2);
     assert!(v["manifest"]["runtime"].get("language").is_none());
     let actions = v["actions"]["actions"].as_array().unwrap();
-    assert_eq!(actions[0]["id"], arclet_sdk::make_full_id("example-rust", "ping"));
+    assert_eq!(actions[0]["id"], knobdeck_sdk::make_full_id("example-rust", "ping"));
     assert_eq!(actions.iter().find(|a| a["type"] == "slider").unwrap()["max"], 100.0);
 }
 
 fn tempfile_dir(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("arclet-sdk-{tag}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("knobdeck-sdk-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }

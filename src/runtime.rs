@@ -104,7 +104,7 @@ impl Runtime {
         log(msg)
     }
 
-    /// This plugin's persistent data folder (`%APPDATA%\Arclet\plugin-data\<id>`).
+    /// This plugin's persistent data folder (`%APPDATA%\KnobDeck\plugin-data\<id>`).
     /// Survives plugin updates and reinstalls: keep tokens and settings here.
     pub fn data_dir(&self) -> &Path {
         &self.0.data_dir
@@ -200,7 +200,7 @@ impl Runtime {
             Ok(Err(e)) => Err(Error::Other(e)),
             Err(_) => {
                 self.0.pending.lock().unwrap().remove(&id);
-                Err(Error::msg("Arclet host call timed out"))
+                Err(Error::msg("KnobDeck host call timed out"))
             }
         }
     }
@@ -323,7 +323,7 @@ pub(crate) fn run(plugin: Plugin) -> ! {
                 _ => log(format!("expected hello, got: {line}")),
             },
             _ => {
-                log("stdin closed before hello (run plugins from Arclet, not directly)");
+                log("stdin closed before hello (run plugins from KnobDeck, not directly)");
                 std::process::exit(1)
             }
         }
@@ -382,7 +382,7 @@ pub(crate) fn run(plugin: Plugin) -> ! {
 
 fn finish(core: &Core) -> ! {
     for (_, tx) in core.rt.0.pending.lock().unwrap().drain() {
-        let _ = tx.send(Err("Arclet host disconnected".into()));
+        let _ = tx.send(Err("KnobDeck host disconnected".into()));
     }
     if let Some(f) = &core.plugin.on_shutdown {
         if catch_unwind(AssertUnwindSafe(|| f(&core.rt))).is_err() {

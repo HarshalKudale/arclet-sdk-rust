@@ -1,9 +1,9 @@
-//! # arclet-sdk
+//! # knobdeck-sdk
 //!
-//! Declarative Rust SDK for authoring [Arclet](https://github.com/HarshalKudale/Arclet)
-//! plugins — the Rust counterpart of `@arclet/sdk`. A plugin is a native
+//! Declarative Rust SDK for authoring [KnobDeck](https://github.com/HarshalKudale/Arclet)
+//! plugins — the Rust counterpart of `@knobdeck/sdk`. A plugin is a native
 //! executable: declare actions with [`Plugin`] / [`Action`], call `.run()`, and
-//! let the `arclet-plugin` CLI generate `manifest.json` / `actions.json`.
+//! let the `knobdeck-plugin` CLI generate `manifest.json` / `actions.json`.
 //!
 //! The host spawns the plugin and talks to it over stdio (protocol v2). Handlers
 //! are plain synchronous closures: invokes run in order per instance, queries
@@ -41,15 +41,15 @@ pub fn mark_setup_required(reason: impl ToString) {
     }
 }
 
-/// This plugin's persistent data folder (`%APPDATA%\Arclet\plugin-data\<id>` on Windows,
-/// `~/Library/Application Support/Arclet/plugin-data/<id>` on macOS):
+/// This plugin's persistent data folder (`%APPDATA%\KnobDeck\plugin-data\<id>` on Windows,
+/// `~/Library/Application Support/KnobDeck/plugin-data/<id>` on macOS):
 /// survives updates and reinstalls. Works in the plugin (from the host's
-/// `hello`) and in setup programs (`ARCLET_PLUGIN_DATA`); `.` otherwise.
+/// `hello`) and in setup programs (`KNOBDECK_PLUGIN_DATA`); `.` otherwise.
 pub fn data_dir() -> PathBuf {
     if let Some(rt) = runtime::global() {
         return rt.data_dir().to_path_buf();
     }
-    std::env::var_os("ARCLET_PLUGIN_DATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+    std::env::var_os("KNOBDECK_PLUGIN_DATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// `data_dir()/name`. If the file still sits in the plugin folder (where
@@ -92,9 +92,9 @@ pub fn load_env() {
 }
 
 /// The OS this plugin runs on, as the host names it: `"windows"` or `"macos"`
-/// (`ARCLET_PLATFORM` from the host, else the compile-time OS).
+/// (`KNOBDECK_PLATFORM` from the host, else the compile-time OS).
 pub fn platform() -> &'static str {
-    match std::env::var("ARCLET_PLATFORM").as_deref() {
+    match std::env::var("KNOBDECK_PLATFORM").as_deref() {
         Ok("windows") => "windows",
         Ok("macos") => "macos",
         _ => std::env::consts::OS,

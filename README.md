@@ -1,7 +1,7 @@
-# arclet-sdk (Rust)
+# knobdeck-sdk (Rust)
 
-Declarative Rust SDK for authoring [Arclet](https://github.com/HarshalKudale/Arclet) plugins — the
-Rust counterpart of [`@arclet/sdk`](../arclet-sdk). Same wire protocol, same action model, same
+Declarative Rust SDK for authoring [KnobDeck](https://github.com/HarshalKudale/Arclet) plugins — the
+Rust counterpart of [`@knobdeck/sdk`](../knobdeck-sdk). Same wire protocol, same action model, same
 generated `manifest.json` / `actions.json`; a plugin is a native executable.
 
 ## Quick start
@@ -9,11 +9,11 @@ generated `manifest.json` / `actions.json`; a plugin is a native executable.
 ```toml
 # Cargo.toml of your plugin crate
 [dependencies]
-arclet-sdk = { path = "../../arclet-sdk-rust" }
+knobdeck-sdk = { path = "../../knobdeck-sdk-rust" }
 ```
 
 ```rust
-use arclet_sdk::{Action, Plugin};
+use knobdeck_sdk::{Action, Plugin};
 
 fn main() {
     Plugin::new("demo", "Demo")
@@ -29,11 +29,11 @@ fn main() {
 Install the CLI once, then run it from the plugin crate folder:
 
 ```bash
-cargo install --path ../arclet-sdk-rust --bin arclet-plugin
-arclet-plugin dev       # debug build -> dist/<id>/ (use "Load Unpacked" in Arclet)
-arclet-plugin dev --watch  # rebuild on change; Arclet restarts the plugin
-arclet-plugin build     # release build -> self-contained dist/<id>/
-arclet-plugin package   # dist/<id>.arclet
+cargo install --path ../knobdeck-sdk-rust --bin knobdeck-plugin
+knobdeck-plugin dev       # debug build -> dist/<id>/ (use "Load Unpacked" in KnobDeck)
+knobdeck-plugin dev --watch  # rebuild on change; KnobDeck restarts the plugin
+knobdeck-plugin build     # release build -> self-contained dist/<id>/
+knobdeck-plugin package   # dist/<id>.knobdeck
 ```
 
 ## Action types
@@ -54,7 +54,7 @@ An icon is a [Lucide](https://lucide.dev/icons) name (`"play"`), an image file i
 
 ## Handlers and context
 
-Handlers are `Fn(&Ctx) -> arclet_sdk::Result`. `?` works on any `std::error::Error`; an error that
+Handlers are `Fn(&Ctx) -> knobdeck_sdk::Result`. `?` works on any `std::error::Error`; an error that
 escapes a handler is logged and sent to the host as an error frame. Invokes for the same instance
 run in order on that instance's worker thread (after the host ack is sent); different instances,
 queries and events run in parallel, so blocking I/O in a handler is fine.
@@ -77,7 +77,7 @@ The host runs on Windows and macOS and spawns the binary built for its OS.
 ```rust
 Plugin::new("mac-tools", "Mac Tools").platforms(&["macos"])        // whole plugin: one OS
 Action::button("lock", "Lock").platforms(&["windows"])              // one action: one OS
-arclet_sdk::platform();  arclet_sdk::is_mac();                      // "windows" | "macos"
+knobdeck_sdk::platform();  knobdeck_sdk::is_mac();                      // "windows" | "macos"
 ctx.send_keys("mod t")?;   // `mod` is ⌘ on macOS and Ctrl on Windows; `cmd`/`win` is ⌘ / Win
 ```
 
@@ -88,7 +88,7 @@ name/path on Windows and a bundle id, `.app` path or app name on macOS.
 
 `build` writes `runtime.executables` (and `setup.executables`) keyed by OS. Building on Windows
 and then on macOS into the same `dist/<id>/` keeps both entries and both binaries, so
-`package` produces one `.arclet` that runs on both.
+`package` produces one `.knobdeck` that runs on both.
 
 **Keystrokes are a last resort.** `send_keys` is for actions that *are* typing, or when no OS API,
 app interface (local API, scripting, Accessibility menu press) or system app exists. Shortcuts can
@@ -98,7 +98,7 @@ the user's configured system binding and comment why no API fits.
 ## Inputs, queries
 
 ```rust
-use arclet_sdk::input::{self, InputExt};
+use knobdeck_sdk::input::{self, InputExt};
 Action::button("open", "Open").inputs(vec![
     input::text("url", "URL").placeholder("https://…"),
     input::checkbox("new_tab", "New tab").default_value(true),
@@ -119,8 +119,8 @@ or `shutdown` arrives); the host kills it 2 s later.
 
 ## Data and logs
 
-Keep tokens and settings in `arclet_sdk::data_dir()` (`%APPDATA%\Arclet\plugin-data\<id>` on
-Windows, `~/Library/Application Support/Arclet/plugin-data/<id>` on macOS) (or `arclet_sdk::data_file("token.json")`,
+Keep tokens and settings in `knobdeck_sdk::data_dir()` (`%APPDATA%\KnobDeck\plugin-data\<id>` on
+Windows, `~/Library/Application Support/KnobDeck/plugin-data/<id>` on macOS) (or `knobdeck_sdk::data_file("token.json")`,
 which also moves a file left in the plugin folder by an older version). The folder survives
 updates and reinstalls. `log()` and anything printed (even `println!`) go to the plugin's
 `log.txt` in that folder; stdout is reserved for the protocol.
@@ -131,7 +131,7 @@ A second Cargo `[[bin]]` that calls `run_setup`; declare it on the plugin with `
 
 ```rust
 fn main() {
-    arclet_sdk::run_setup(|ctx| {
+    knobdeck_sdk::run_setup(|ctx| {
         let host = ctx.input_str("host");
         if host.is_empty() { return ctx.fail("Host cannot be empty"); }
         std::fs::write(ctx.data_dir().join(".env"), format!("HOST={host}\n"))?;
@@ -140,7 +140,7 @@ fn main() {
 }
 ```
 
-At runtime the plugin calls `arclet_sdk::load_env()` to read that `.env`. Declare collected fields with
+At runtime the plugin calls `knobdeck_sdk::load_env()` to read that `.env`. Declare collected fields with
 `.setup_inputs(vec![..])` on the plugin.
 
 ## Differences from the JS SDK
@@ -152,7 +152,7 @@ At runtime the plugin calls `arclet_sdk::load_env()` to read that `.env`. Declar
 ## Layout
 
 `src/runtime.rs` (stdio protocol v2), `src/plugin.rs` (builders), `src/codegen.rs` (manifest/actions),
-`src/bin/arclet-plugin.rs` (CLI), `tests/protocol.rs` (drives the demo over pipes).
+`src/bin/knobdeck-plugin.rs` (CLI), `tests/protocol.rs` (drives the demo over pipes).
 
 ## Protocol v2
 

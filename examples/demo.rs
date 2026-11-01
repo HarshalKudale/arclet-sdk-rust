@@ -1,14 +1,14 @@
 //! Port of the JS persistent example: button, toggle, hold, slider, query-backed
-//! inputs and a background ticker. Run `arclet-plugin dev` from a crate using it.
+//! inputs and a background ticker. Run `knobdeck-plugin dev` from a crate using it.
 
-use arclet_sdk::input::{self, InputExt};
-use arclet_sdk::{json, Action, Plugin, Visual};
+use knobdeck_sdk::input::{self, InputExt};
+use knobdeck_sdk::{json, Action, Plugin, Visual};
 use std::time::Duration;
 
 fn main() {
     Plugin::new("example-rust", "Example Rust")
         .version("1.0.0")
-        .author("Arclet")
+        .author("KnobDeck")
         .description("Reference plugin in Rust.")
         .action(
             Action::button("ping", "Ping (log)")

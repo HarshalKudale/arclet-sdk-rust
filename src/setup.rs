@@ -1,7 +1,7 @@
-//! Standalone setup program support. Arclet runs the setup binary once when the
-//! user clicks Setup, with the collected fields in `ARCLET_SETUP_INPUTS` (JSON).
+//! Standalone setup program support. KnobDeck runs the setup binary once when the
+//! user clicks Setup, with the collected fields in `KNOBDECK_SETUP_INPUTS` (JSON).
 //! Returning `Ok` → exit 0 → the host marks setup complete; `Err` → exit 1.
-//! Save credentials under [`crate::data_dir`] (`ARCLET_PLUGIN_DATA`).
+//! Save credentials under [`crate::data_dir`] (`KNOBDECK_PLUGIN_DATA`).
 
 use crate::ctx::input_readers;
 use crate::error::{Error, Result};
@@ -30,15 +30,15 @@ impl SetupCtx {
     }
 }
 
-/// Run a setup program: `fn main() { arclet_sdk::run_setup(|ctx| { …; Ok(()) }) }`.
-/// A no-op under `ARCLET_CODEGEN=1` so the CLI can probe every binary safely.
+/// Run a setup program: `fn main() { knobdeck_sdk::run_setup(|ctx| { …; Ok(()) }) }`.
+/// A no-op under `KNOBDECK_CODEGEN=1` so the CLI can probe every binary safely.
 pub fn run_setup(run: impl FnOnce(&SetupCtx) -> Result) -> ! {
-    if std::env::var("ARCLET_CODEGEN").as_deref() == Ok("1") {
+    if std::env::var("KNOBDECK_CODEGEN").as_deref() == Ok("1") {
         std::process::exit(0);
     }
-    let inputs = match std::env::var("ARCLET_SETUP_INPUTS") {
+    let inputs = match std::env::var("KNOBDECK_SETUP_INPUTS") {
         Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
-            eprintln!("setup: warning: could not parse ARCLET_SETUP_INPUTS: {e}");
+            eprintln!("setup: warning: could not parse KNOBDECK_SETUP_INPUTS: {e}");
             json!({})
         }),
         Err(_) => json!({}),

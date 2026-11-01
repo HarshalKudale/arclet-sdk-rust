@@ -1,8 +1,8 @@
 [package]
-name = "arclet-sdk"
+name = "knobdeck-sdk"
 version = "0.3.0"
 edition = "2021"
-description = "Declarative Rust SDK for authoring Arclet plugins"
+description = "Declarative Rust SDK for authoring KnobDeck plugins"
 license = "MIT"
 repository = "https://github.com/HarshalKudale/arclet-sdk-rust"
 
@@ -11,5 +11,5 @@ serde_json = { version = "1", features = ["preserve_order"] }
 sha1 = "0.10"
 
 [[bin]]
-name = "arclet-plugin"
-path = "src/bin/arclet-plugin.rs"
+name = "knobdeck-plugin"
+path = "src/bin/knobdeck-plugin.rs"

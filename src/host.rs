@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 fn call(method: &str, params: Value) -> Result<Value> {
     global()
-        .ok_or_else(|| Error::msg("Arclet host bridge is not connected"))?
+        .ok_or_else(|| Error::msg("KnobDeck host bridge is not connected"))?
         .host_call(method, params)
 }
 

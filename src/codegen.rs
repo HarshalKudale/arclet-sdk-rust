@@ -1,6 +1,6 @@
 //! Generates `manifest.json` + `actions.json` content from a `Plugin`.
-//! Emitted by the plugin binary itself when launched with `ARCLET_CODEGEN=1`
-//! (the `arclet-plugin` CLI does this on `dev` / `build`).
+//! Emitted by the plugin binary itself when launched with `KNOBDECK_CODEGEN=1`
+//! (the `knobdeck-plugin` CLI does this on `dev` / `build`).
 
 use crate::plugin::{Action, Kind, Plugin};
 use serde_json::{json, Map, Value};

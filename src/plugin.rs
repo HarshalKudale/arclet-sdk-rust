@@ -1,7 +1,7 @@
 //! `Plugin` + `Action` builders — the entry point of the SDK.
 //!
 //! ```no_run
-//! use arclet_sdk::{Action, Plugin};
+//! use knobdeck_sdk::{Action, Plugin};
 //!
 //! fn main() {
 //!     Plugin::new("demo", "Demo")
@@ -269,8 +269,8 @@ pub struct Plugin {
 
 impl Plugin {
     pub fn new(id: &str, name: &str) -> Self {
-        assert!(!id.is_empty(), "Arclet SDK: Plugin::new() requires an id");
-        assert!(!name.is_empty(), "Arclet SDK: Plugin::new() requires a name");
+        assert!(!id.is_empty(), "KnobDeck SDK: Plugin::new() requires an id");
+        assert!(!name.is_empty(), "KnobDeck SDK: Plugin::new() requires a name");
         Plugin {
             meta: Meta { id: id.into(), name: name.into(), ..Default::default() },
             actions: HashMap::new(),
@@ -335,23 +335,23 @@ impl Plugin {
     /// Register an action. Panics on duplicate ids or an invalid definition
     /// (this is author-time configuration, mirroring the JS SDK's throws).
     pub fn action(mut self, a: Action) -> Self {
-        assert!(!a.id.is_empty(), "Arclet SDK: action must have an id");
-        assert!(!self.actions.contains_key(&a.id), "Arclet SDK: duplicate action id \"{}\"", a.id);
+        assert!(!a.id.is_empty(), "KnobDeck SDK: action must have an id");
+        assert!(!self.actions.contains_key(&a.id), "KnobDeck SDK: duplicate action id \"{}\"", a.id);
         match a.kind {
             Kind::Wheel => {
-                assert!(a.on_open.is_some(), "Arclet SDK: wheel action \"{}\" needs on_open", a.id);
+                assert!(a.on_open.is_some(), "KnobDeck SDK: wheel action \"{}\" needs on_open", a.id);
                 assert!(
                     a.states.is_empty() && a.released.is_none() && a.held.is_none(),
-                    "Arclet SDK: wheel action \"{}\" cannot declare states/released/held",
+                    "KnobDeck SDK: wheel action \"{}\" cannot declare states/released/held",
                     a.id
                 );
             }
             Kind::Slider => {
-                assert!(a.on_adjust.is_some(), "Arclet SDK: slider action \"{}\" needs on_adjust", a.id);
-                assert!(a.min < a.max, "Arclet SDK: slider action \"{}\" must have min < max", a.id);
+                assert!(a.on_adjust.is_some(), "KnobDeck SDK: slider action \"{}\" needs on_adjust", a.id);
+                assert!(a.min < a.max, "KnobDeck SDK: slider action \"{}\" must have min < max", a.id);
                 assert!(
                     a.states.is_empty() && a.released.is_none() && a.held.is_none(),
-                    "Arclet SDK: slider action \"{}\" cannot declare states/released/held",
+                    "KnobDeck SDK: slider action \"{}\" cannot declare states/released/held",
                     a.id
                 );
             }
@@ -365,8 +365,8 @@ impl Plugin {
     /// Register a config-time query provider (feeds `select` inputs with live options).
     /// Return `[{ value, label }]` or bare strings.
     pub fn query(mut self, id: &str, f: impl Fn(&QueryCtx) -> Result<Value> + Send + Sync + 'static) -> Self {
-        assert!(!id.is_empty(), "Arclet SDK: query must have an id");
-        assert!(!self.queries.contains_key(id), "Arclet SDK: duplicate query id \"{id}\"");
+        assert!(!id.is_empty(), "KnobDeck SDK: query must have an id");
+        assert!(!self.queries.contains_key(id), "KnobDeck SDK: duplicate query id \"{id}\"");
         self.queries.insert(id.into(), Arc::new(f));
         self
     }
@@ -389,7 +389,7 @@ impl Plugin {
         self
     }
 
-    /// Runs once when the host stops the plugin (or Arclet exits cleanly):
+    /// Runs once when the host stops the plugin (or KnobDeck exits cleanly):
     /// flush state, close connections. Keep it short — the host kills the
     /// process 2 s after asking it to stop.
     pub fn on_shutdown(mut self, f: impl Fn(&Runtime) + Send + Sync + 'static) -> Self {
@@ -402,12 +402,12 @@ impl Plugin {
         Ok((generate_manifest(self, stage), generate_actions(self)?))
     }
 
-    /// Start the plugin. Under `ARCLET_CODEGEN=1` it prints the generated
+    /// Start the plugin. Under `KNOBDECK_CODEGEN=1` it prints the generated
     /// `{manifest, actions}` JSON to stdout and exits instead (used by the CLI);
     /// otherwise it talks to the host over stdio and never returns.
     pub fn run(self) -> ! {
-        if std::env::var("ARCLET_CODEGEN").as_deref() == Ok("1") {
-            let stage = if std::env::var("ARCLET_STAGE").as_deref() == Ok("build") { Stage::Build } else { Stage::Dev };
+        if std::env::var("KNOBDECK_CODEGEN").as_deref() == Ok("1") {
+            let stage = if std::env::var("KNOBDECK_STAGE").as_deref() == Ok("build") { Stage::Build } else { Stage::Dev };
             match self.to_json(stage) {
                 Ok((manifest, actions)) => {
                     println!("{}", json!({"manifest": manifest, "actions": actions, "meta": {
