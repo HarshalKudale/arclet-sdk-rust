@@ -41,7 +41,8 @@ pub fn mark_setup_required(reason: impl ToString) {
     }
 }
 
-/// This plugin's persistent data folder (`%APPDATA%\Arclet\plugin-data\<id>`):
+/// This plugin's persistent data folder (`%APPDATA%\Arclet\plugin-data\<id>` on Windows,
+/// `~/Library/Application Support/Arclet/plugin-data/<id>` on macOS):
 /// survives updates and reinstalls. Works in the plugin (from the host's
 /// `hello`) and in setup programs (`ARCLET_PLUGIN_DATA`); `.` otherwise.
 pub fn data_dir() -> PathBuf {
@@ -88,6 +89,22 @@ pub fn load_env() {
             std::env::set_var(k.trim(), v);
         }
     }
+}
+
+/// The OS this plugin runs on, as the host names it: `"windows"` or `"macos"`
+/// (`ARCLET_PLATFORM` from the host, else the compile-time OS).
+pub fn platform() -> &'static str {
+    match std::env::var("ARCLET_PLATFORM").as_deref() {
+        Ok("windows") => "windows",
+        Ok("macos") => "macos",
+        _ => std::env::consts::OS,
+    }
+}
+
+/// `true` on macOS. Use it to pick per-OS key chords: `if is_mac() { "cmd t" } else { "ctrl t" }`
+/// (or send the `mod` token, which is ⌘ on macOS and Ctrl on Windows).
+pub fn is_mac() -> bool {
+    platform() == "macos"
 }
 
 /// `env_or("VLC_PORT", "8080")` — env var with a default (empty counts as unset).

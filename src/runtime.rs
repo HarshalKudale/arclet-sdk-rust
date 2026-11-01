@@ -282,8 +282,30 @@ fn take_protocol_stdout() -> Box<dyn Write + Send> {
     }
 }
 
-// shortcut: no stdout redirection off Windows (needs dup/dup2); add it if plugins ship there.
-#[cfg(not(windows))]
+/// Unix (macOS): keep a duplicate of fd 1 for the protocol, then point fd 1
+/// at stderr so `println!` lands in the log.
+#[cfg(unix)]
+fn take_protocol_stdout() -> Box<dyn Write + Send> {
+    use std::os::unix::io::FromRawFd;
+    extern "C" {
+        fn dup(fd: i32) -> i32;
+        fn dup2(src: i32, dst: i32) -> i32;
+    }
+    let _ = std::io::stdout().flush();
+    unsafe {
+        let proto = dup(1);
+        if proto < 0 {
+            return Box::new(std::io::stdout());
+        }
+        if dup2(2, 1) < 0 {
+            // Couldn't redirect: write the protocol through the duplicate anyway.
+            log("stdout redirect failed; stray prints may corrupt the protocol");
+        }
+        Box::new(std::fs::File::from_raw_fd(proto))
+    }
+}
+
+#[cfg(not(any(windows, unix)))]
 fn take_protocol_stdout() -> Box<dyn Write + Send> {
     Box::new(std::io::stdout())
 }

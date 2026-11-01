@@ -90,6 +90,7 @@ pub struct Action {
     pub(crate) on_child_press: Option<Handler>,
     pub(crate) on_open: Option<OpenFn>,
     pub(crate) live: Option<(Duration, LiveFn)>,
+    pub(crate) platforms: Vec<String>,
 }
 
 fn handler(f: impl Fn(&Ctx) -> Result + Send + Sync + 'static) -> Option<Handler> {
@@ -120,6 +121,7 @@ impl Action {
             on_child_press: None,
             on_open: None,
             live: None,
+            platforms: vec![],
         }
     }
 
@@ -221,6 +223,12 @@ impl Action {
         self.live = Some((every, Arc::new(f)));
         self
     }
+    /// Limit this action to some OSes (`"windows"`, `"macos"`). The host hides it
+    /// from pickers elsewhere; already-placed slices report a clear error. Default: everywhere.
+    pub fn platforms(mut self, os: &[&str]) -> Self {
+        self.platforms = os.iter().map(|s| s.to_string()).collect();
+        self
+    }
     /// Wheel: a button child was pressed (`ctx.child_id`).
     pub fn on_child_press(mut self, f: impl Fn(&Ctx) -> Result + Send + Sync + 'static) -> Self {
         self.on_child_press = handler(f);
@@ -243,6 +251,8 @@ pub(crate) struct Meta {
     pub setup_page: Option<String>,
     pub setup_assets_dir: Option<String>,
     pub setup_inputs: Vec<Value>,
+    /// OSes the plugin runs on (`"windows"`, `"macos"`); empty = everywhere.
+    pub platforms: Vec<String>,
 }
 
 pub struct Plugin {
@@ -288,6 +298,12 @@ impl Plugin {
     }
     pub fn icon(mut self, v: &str) -> Self {
         self.meta.icon = Some(v.into());
+        self
+    }
+    /// OSes this plugin runs on (`"windows"`, `"macos"`). The host refuses to
+    /// start it elsewhere and shows it as unavailable. Default: everywhere.
+    pub fn platforms(mut self, os: &[&str]) -> Self {
+        self.meta.platforms = os.iter().map(|s| s.to_string()).collect();
         self
     }
     pub fn ack_timeout_ms(mut self, v: u64) -> Self {

@@ -42,6 +42,11 @@ pub fn generate_manifest(p: &Plugin, stage: Stage) -> Value {
 
     // No `language` key: the host spawns it as a native executable.
     let mut runtime = Map::new();
+    if stage == Stage::Build {
+        // Per-OS entry, so packages built on Windows and macOS can be merged
+        // (the CLI keeps the other OS's entries); `executable` is the fallback.
+        runtime.insert("executables".into(), json!({ crate::platform(): plugin_exe }));
+    }
     runtime.insert("executable".into(), plugin_exe.into());
     if let Some(v) = m.ack_timeout_ms {
         runtime.insert("ack_timeout_ms".into(), v.into());
@@ -60,9 +65,15 @@ pub fn generate_manifest(p: &Plugin, stage: Stage) -> Value {
             manifest.insert(k.into(), v.clone().into());
         }
     }
+    if !m.platforms.is_empty() {
+        manifest.insert("platforms".into(), json!(m.platforms));
+    }
 
     if let Some(exe) = setup_exe {
         let mut setup = Map::new();
+        if stage == Stage::Build {
+            setup.insert("executables".into(), json!({ crate::platform(): exe }));
+        }
         setup.insert("executable".into(), exe.into());
         if let Some(page) = &m.setup_page {
             setup.insert("page".into(), page.clone().into());
@@ -146,6 +157,9 @@ pub fn generate_actions(p: &Plugin) -> Result<Value, String> {
             e.insert("icon".into(), icon.clone().into());
         }
         e.insert("inputs".into(), Value::Array(a.inputs.clone()));
+        if !a.platforms.is_empty() {
+            e.insert("platforms".into(), json!(a.platforms));
+        }
         match a.kind {
             Kind::Toggle => {
                 e.insert("states".into(), a.states.iter().map(strip_style).collect());
@@ -185,5 +199,21 @@ mod tests {
     fn full_ids_are_pinned() {
         assert_eq!(make_full_id("example-rust", "mute"), "example-rust-mute-b1c2189c");
         assert_eq!(make_full_id("win-tools", "always-on-top"), "win-tools-always-on-top-7ee2f192");
+    }
+
+    #[test]
+    fn platforms_and_per_os_executables() {
+        let p = Plugin::new("mac-tools", "Mac Tools")
+            .platforms(&["macos"])
+            .action(Action::button("a", "A").on_press(|_| Ok(())))
+            .action(Action::button("b", "B").platforms(&["windows"]).on_press(|_| Ok(())));
+        let m = generate_manifest(&p, Stage::Build);
+        assert_eq!(m["platforms"], json!(["macos"]));
+        let exe = m["runtime"]["executable"].clone();
+        assert_eq!(m["runtime"]["executables"][crate::platform()], exe);
+        assert!(generate_manifest(&p, Stage::Dev)["runtime"]["executables"].is_null());
+        let a = generate_actions(&p).unwrap();
+        assert!(a["actions"][0].get("platforms").is_none());
+        assert_eq!(a["actions"][1]["platforms"], json!(["windows"]));
     }
 }

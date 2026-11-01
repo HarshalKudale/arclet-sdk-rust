@@ -109,6 +109,29 @@ fn stage_exe(exe: &Path, dist: &Path) {
     fs::copy(exe, &dest).unwrap_or_else(|e| die(format!("copy {}: {e}", exe.display())));
 }
 
+/// Keep the other OSes' `executables` entries from a previous build in the same
+/// `dist/<id>/` (e.g. built on Windows, then on macOS), as long as their binaries
+/// are still there, so one package runs on both.
+fn merge_other_os_executables(manifest: &mut Value, dist: &Path) {
+    let Ok(text) = fs::read_to_string(dist.join("manifest.json")) else { return };
+    let Ok(old) = serde_json::from_str::<Value>(&text) else { return };
+    for section in ["runtime", "setup"] {
+        // `get_mut`, not `manifest[section][..]`: IndexMut on a Value inserts
+        // missing keys as null, which would add a bogus `"setup": {"executables": null}`.
+        let cur = manifest.get_mut(section).and_then(|s| s.get_mut("executables")).and_then(Value::as_object_mut);
+        let (Some(prev), Some(cur)) = (old[section]["executables"].as_object(), cur) else {
+            continue;
+        };
+        for (os, exe) in prev {
+            let present = exe.as_str().is_some_and(|e| dist.join(e).is_file());
+            if !cur.contains_key(os) && present {
+                cur.insert(os.clone(), exe.clone());
+                println!("  · keeping {section} executable for {os}: {}", exe.as_str().unwrap_or_default());
+            }
+        }
+    }
+}
+
 fn assemble(release: bool, skip_setup: bool) {
     // Both stages ship the binaries inside dist/<id>/: running them out of
     // target/ would lock them against the next cargo build.
@@ -148,6 +171,7 @@ fn assemble(release: bool, skip_setup: bool) {
         }
     }
 
+    merge_other_os_executables(&mut manifest, &dist);
     write_json(dist.join("manifest.json"), &manifest);
     write_json(dist.join("actions.json"), &actions);
     println!("  ✓ dist/{id}/ written{}", if release { "\n  Run \"arclet-plugin package\" to produce a .arclet file." } else { "" });
@@ -227,5 +251,26 @@ fn main() {
         Some("build") => assemble(true, false),
         Some("package") => package(),
         _ => print!("{USAGE}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn merge_keeps_other_os_and_never_invents_setup() {
+        let dist = std::env::temp_dir().join(format!("arclet-merge-{}", std::process::id()));
+        fs::create_dir_all(&dist).unwrap();
+        fs::write(dist.join("p.exe"), "").unwrap();
+        let old = json!({"runtime": {"executables": {"windows": "p.exe", "linux": "gone"}, "executable": "p.exe"}});
+        fs::write(dist.join("manifest.json"), old.to_string()).unwrap();
+
+        let mut m = json!({"id": "p", "runtime": {"executables": {"macos": "p"}, "executable": "p"}});
+        merge_other_os_executables(&mut m, &dist);
+        assert_eq!(m["runtime"]["executables"], json!({"macos": "p", "windows": "p.exe"}));
+        assert!(m.get("setup").is_none(), "no setup section may be added: {m}");
+        let _ = fs::remove_dir_all(&dist);
     }
 }
