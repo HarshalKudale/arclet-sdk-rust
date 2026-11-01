@@ -67,8 +67,33 @@ ctx.input_str("url"); ctx.input_bool("on"); ctx.input_f64("n");
 ctx.state; ctx.fg_process; ctx.fg_title; ctx.trigger; ctx.child_id; ctx.value; ctx.delta;
 ctx.send_keys("ctrl+m")?; ctx.focus_app("code.exe")?; ctx.installed_apps()?;
 ctx.mark_setup_required("Discord token expired");   // host stops the plugin, asks for setup
-ctx.data_dir();                 // %APPDATA%\Arclet\plugin-data\<id> — survives updates
+ctx.data_dir();                 // plugin-data/<id> — survives updates (see Data and logs)
 ```
+
+## Windows and macOS
+
+The host runs on Windows and macOS and spawns the binary built for its OS.
+
+```rust
+Plugin::new("mac-tools", "Mac Tools").platforms(&["macos"])        // whole plugin: one OS
+Action::button("lock", "Lock").platforms(&["windows"])              // one action: one OS
+arclet_sdk::platform();  arclet_sdk::is_mac();                      // "windows" | "macos"
+ctx.send_keys("mod t")?;   // `mod` is ⌘ on macOS and Ctrl on Windows; `cmd`/`win` is ⌘ / Win
+```
+
+Without `platforms` a plugin or action is offered on both OSes. Elsewhere the host hides it from
+pickers, and won't start a plugin whose `platforms` exclude its OS. `fg_process` is the exe name on
+Windows (`code.exe`) and the bundle id on macOS (`com.microsoft.VSCode`). `focus_app` takes an exe
+name/path on Windows and a bundle id, `.app` path or app name on macOS.
+
+`build` writes `runtime.executables` (and `setup.executables`) keyed by OS. Building on Windows
+and then on macOS into the same `dist/<id>/` keeps both entries and both binaries, so
+`package` produces one `.arclet` that runs on both.
+
+**Keystrokes are a last resort.** `send_keys` is for actions that *are* typing, or when no OS API,
+app interface (local API, scripting, Accessibility menu press) or system app exists. Shortcuts can
+be captured by the app in focus, remapped or turned off by the user. If you must use one, prefer
+the user's configured system binding and comment why no API fits.
 
 ## Inputs, queries
 
@@ -94,7 +119,8 @@ or `shutdown` arrives); the host kills it 2 s later.
 
 ## Data and logs
 
-Keep tokens and settings in `arclet_sdk::data_dir()` (or `arclet_sdk::data_file("token.json")`,
+Keep tokens and settings in `arclet_sdk::data_dir()` (`%APPDATA%\Arclet\plugin-data\<id>` on
+Windows, `~/Library/Application Support/Arclet/plugin-data/<id>` on macOS) (or `arclet_sdk::data_file("token.json")`,
 which also moves a file left in the plugin folder by an older version). The folder survives
 updates and reinstalls. `log()` and anything printed (even `println!`) go to the plugin's
 `log.txt` in that folder; stdout is reserved for the protocol.
@@ -119,7 +145,7 @@ At runtime the plugin calls `arclet_sdk::load_env()` to read that `.env`. Declar
 
 ## Differences from the JS SDK
 
-- No bundling step: `build` ships the release exe(s) in `dist/<id>/`; the manifest has no `runtime.language`, so the host runs it as a native executable.
+- No bundling step: `build` ships the release binaries in `dist/<id>/`; the manifest has no `runtime.language`, so the host runs it as a native executable.
 - `.env` is read at runtime (`load_env()`), not inlined at build time.
 - `category` is not part of the generated `actions.json` in the current JS SDK, so it is omitted here too.
 
