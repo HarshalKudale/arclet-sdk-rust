@@ -157,8 +157,10 @@ pub fn generate_actions(p: &Plugin) -> Result<Value, String> {
             e.insert("icon".into(), icon.clone().into());
         }
         e.insert("inputs".into(), Value::Array(a.inputs.clone()));
-        if !a.platforms.is_empty() {
-            e.insert("platforms".into(), json!(a.platforms));
+        // An action without its own platforms inherits the plugin's.
+        let platforms = if a.platforms.is_empty() { &p.meta.platforms } else { &a.platforms };
+        if !platforms.is_empty() {
+            e.insert("platforms".into(), json!(platforms));
         }
         match a.kind {
             Kind::Toggle => {
@@ -213,7 +215,7 @@ mod tests {
         assert_eq!(m["runtime"]["executables"][crate::platform()], exe);
         assert!(generate_manifest(&p, Stage::Dev)["runtime"]["executables"].is_null());
         let a = generate_actions(&p).unwrap();
-        assert!(a["actions"][0].get("platforms").is_none());
+        assert_eq!(a["actions"][0]["platforms"], json!(["macos"])); // inherited from the plugin
         assert_eq!(a["actions"][1]["platforms"], json!(["windows"]));
     }
 }
