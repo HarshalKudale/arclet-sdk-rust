@@ -1,6 +1,6 @@
 # knobdeck-sdk (Rust)
 
-Declarative Rust SDK for authoring [KnobDeck](https://github.com/HarshalKudale/Arclet) plugins — the
+Declarative Rust SDK for authoring [KnobDeck](https://github.com/HarshalKudale/knobdeck) plugins — the
 Rust counterpart of [`@knobdeck/sdk`](../knobdeck-sdk). Same wire protocol, same action model, same
 generated `manifest.json` / `actions.json`; a plugin is a native executable.
 
