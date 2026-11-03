@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Protocol version this SDK speaks.
 pub const PROTOCOL: u32 = 2;
@@ -442,16 +442,25 @@ fn run_ordered(rt: &Runtime, key: String, job: Job) {
     });
 }
 
-/// Poll `f` for every placed instance of `action` and push label/icon changes.
+/// Poll `f` for every placed instance of `action` and push state/label/icon changes.
 fn start_live(rt: Runtime, action: String, every: Duration, f: LiveFn) {
     spawn("live", move || {
-        let mut sent: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
+        let mut sent: HashMap<String, (Option<String>, Option<String>, Option<String>)> = HashMap::new();
         let mut failed: HashMap<String, String> = HashMap::new();
+        // Each instance runs every `every`, but a newly placed one runs within a tick, not a whole interval.
+        let mut due: HashMap<String, Instant> = HashMap::new();
+        let tick = every.min(Duration::from_secs(1));
         loop {
             let ids = rt.instances_of(&action);
             sent.retain(|k, _| ids.contains(k));
             failed.retain(|k, _| ids.contains(k));
+            due.retain(|k, _| ids.contains(k));
             for iid in ids {
+                let now = Instant::now();
+                if due.get(&iid).is_some_and(|t| now < *t) {
+                    continue;
+                }
+                due.insert(iid.clone(), now + every);
                 let ic = InitialCtx {
                     instance_id: iid.clone(),
                     action_id: action.clone(),
@@ -462,9 +471,9 @@ fn start_live(rt: Runtime, action: String, every: Duration, f: LiveFn) {
                 match catch_unwind(AssertUnwindSafe(|| f(&ic))) {
                     Ok(Ok(v)) => {
                         failed.remove(&iid);
-                        let key = (v.label.clone(), v.icon.clone());
+                        let key = (v.state.clone(), v.label.clone(), v.icon.clone());
                         if sent.get(&iid) != Some(&key) {
-                            rt.set_visual(&iid, Visual { state: None, ..v });
+                            rt.set_visual(&iid, v);
                             sent.insert(iid, key);
                         }
                     }
@@ -478,7 +487,7 @@ fn start_live(rt: Runtime, action: String, every: Duration, f: LiveFn) {
                     Err(_) => log(format!("live ({action}): panicked")),
                 }
             }
-            std::thread::sleep(every);
+            std::thread::sleep(tick);
         }
     });
 }

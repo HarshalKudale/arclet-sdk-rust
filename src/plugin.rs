@@ -215,10 +215,11 @@ impl Action {
         self.on_open = Some(Arc::new(f));
         self
     }
-    /// Live content (Stream Deck-style stats): every `every`, `f` runs for each
-    /// placed instance and its label/icon are pushed when they change. The
-    /// action itself is unchanged; while the plugin is not running, the tile
-    /// shows its configured icon and label. `state` in the returned `Visual` is ignored.
+    /// Live content (Stream Deck-style stats, or state polled from a device): every `every`,
+    /// `f` runs for each placed instance (a newly placed one within a second) and the returned
+    /// state/label/icon are pushed when they change. Leave `state` unset for display-only
+    /// content; set it to keep a toggle or slider in step with something changed elsewhere.
+    /// While the plugin is not running, the tile shows its configured icon and label.
     pub fn live(mut self, every: Duration, f: impl Fn(&InitialCtx) -> Result<Visual> + Send + Sync + 'static) -> Self {
         self.live = Some((every, Arc::new(f)));
         self
