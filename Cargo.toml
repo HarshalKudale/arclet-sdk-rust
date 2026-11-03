@@ -1,6 +1,6 @@
 [package]
 name = "knobdeck-sdk"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Declarative Rust SDK for authoring KnobDeck plugins"
 license = "MIT"
@@ -9,6 +9,14 @@ repository = "https://github.com/HarshalKudale/knobdeck-sdk"
 [dependencies]
 serde_json = { version = "1", features = ["preserve_order"] }
 sha1 = "0.10"
+# `oauth` feature: browser / device-code sign-in and token refresh for web-service plugins.
+ureq = { version = "2", features = ["json"], optional = true }
+sha2 = { version = "0.10", optional = true }
+base64 = { version = "0.22", optional = true }
+getrandom = { version = "0.2", optional = true }
+
+[features]
+oauth = ["dep:ureq", "dep:sha2", "dep:base64", "dep:getrandom"]
 
 [[bin]]
 name = "knobdeck-plugin"

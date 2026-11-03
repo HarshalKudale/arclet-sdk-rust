@@ -141,7 +141,21 @@ fn main() {
 ```
 
 At runtime the plugin calls `knobdeck_sdk::load_env()` to read that `.env`. Declare collected fields with
-`.setup_inputs(vec![..])` on the plugin.
+`.setup_inputs(vec![..])` on the plugin and pass `None` as the page: the host draws the form.
+`knobdeck_sdk::open_url(url)` opens a link in the default browser.
+
+## Signing in to a web service (feature `oauth`)
+
+`knobdeck-sdk = { ..., features = ["oauth"] }` adds `knobdeck_sdk::oauth::OAuth`:
+
+- `authorize_pkce(auth_url, scopes, port, extra)`: browser sign-in with PKCE, answered on
+  `http://127.0.0.1:{port}/callback` (register that redirect URI). No client secret is shipped.
+- `device_flow(device_url, form)`: for services without PKCE for desktop apps (Twitch); opens
+  the activation page and waits for approval.
+- `access_token()`: the saved token, refreshed when it is about to expire. A refused refresh calls
+  `mark_setup_required`, so the host asks the user to sign in again.
+
+Run the sign-in in the setup program; the token is kept as `oauth-token.json` in the data folder.
 
 ## Differences from the JS SDK
 

@@ -16,6 +16,8 @@ mod error;
 mod host;
 pub mod input;
 mod log;
+#[cfg(feature = "oauth")]
+pub mod oauth;
 mod plugin;
 mod runtime;
 mod setup;
@@ -110,4 +112,55 @@ pub fn is_mac() -> bool {
 /// `env_or("VLC_PORT", "8080")` — env var with a default (empty counts as unset).
 pub fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).ok().filter(|v| !v.is_empty()).unwrap_or_else(|| default.into())
+}
+
+/// Write `.env` in the plugin's data folder (what [`load_env`] reads), replacing it.
+/// For setup programs: `save_env(&[("VLC_HOST", &host), ("VLC_PORT", &port)])?`.
+/// Values are written as they are; a line break in one is refused (it would split the line).
+pub fn save_env(pairs: &[(&str, &str)]) -> Result<()> {
+    let mut text = String::new();
+    for (k, v) in pairs {
+        if v.contains(['\n', '\r']) || k.contains(['\n', '\r', '=']) {
+            return Err(Error::msg(format!("{k}: line breaks are not allowed")));
+        }
+        text.push_str(&format!("{k}={v}\n"));
+    }
+    std::fs::write(data_dir().join(".env"), text)?;
+    Ok(())
+}
+
+/// Open a URL in the default browser (or any URI with its registered app).
+pub fn open_url(url: &str) -> Result<()> {
+    // url.dll hands the URL to the shell as one argument, so `&` and spaces need no cmd quoting.
+    let status = if cfg!(windows) {
+        std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).status()
+    } else {
+        std::process::Command::new("open").arg(url).status()
+    };
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(Error::msg(format!("Could not open {url} ({s})"))),
+        Err(e) => Err(Error::msg(format!("Could not open {url}: {e}"))),
+    }
+}
+
+/// Tests that point `KNOBDECK_PLUGIN_DATA` (process-wide) at their own folder hold this.
+#[cfg(test)]
+pub(crate) static DATA_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn save_env_round_trips_and_refuses_line_breaks() {
+        let _guard = super::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("kd-env-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("KNOBDECK_PLUGIN_DATA", &dir);
+        super::save_env(&[("KD_TEST_A", "x=y"), ("KD_TEST_B", "")]).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join(".env")).unwrap(), "KD_TEST_A=x=y\nKD_TEST_B=\n");
+        super::load_env();
+        assert_eq!(std::env::var("KD_TEST_A").unwrap(), "x=y");
+        assert!(super::save_env(&[("K", "a\nb")]).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
