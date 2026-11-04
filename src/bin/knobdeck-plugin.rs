@@ -4,6 +4,7 @@
 //!                                  "Load Unpacked"; --watch rebuilds on change and
 //!                                  KnobDeck restarts the plugin when its exe changes
 //!   build                          cargo build --release, assemble dist/<id>/
+//!                                  (on macOS: universal arm64 + x86_64 binaries via lipo)
 //!   package                        zip dist/<id>/ into dist/<id>.knobdeck
 //!
 //! Codegen runs every built binary with KNOBDECK_CODEGEN=1; the plugin binary
@@ -36,16 +37,55 @@ fn copy_dir(src: &Path, dest: &Path) {
     }
 }
 
+/// Release builds on macOS are universal (Apple silicon + Intel), like the KnobDeck app.
+fn build(release: bool) -> Vec<PathBuf> {
+    if release && cfg!(target_os = "macos") {
+        universal_build()
+    } else {
+        cargo_build(release, None)
+    }
+}
+
+/// Build for both Mac architectures and `lipo` each binary into target/universal-apple-darwin/release/.
+fn universal_build() -> Vec<PathBuf> {
+    let arm = cargo_build(true, Some("aarch64-apple-darwin"));
+    let x64 = cargo_build(true, Some("x86_64-apple-darwin"));
+    let out_dir = arm
+        .first()
+        .and_then(|e| e.parent()?.parent()?.parent())
+        .unwrap_or_else(|| die("cargo produced no executables"))
+        .join("universal-apple-darwin/release");
+    fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(e));
+    arm.iter()
+        .map(|a| {
+            let name = a.file_name().unwrap();
+            let x = x64.iter().find(|x| x.file_name() == Some(name)).unwrap_or_else(|| die(format!("no x86_64 build of {}", name.to_string_lossy())));
+            let out = out_dir.join(name);
+            let ok = Command::new("lipo").arg("-create").arg("-output").arg(&out).arg(a).arg(x).status().map_or(false, |s| s.success());
+            if !ok {
+                die(format!("lipo failed for {}", name.to_string_lossy()));
+            }
+            out
+        })
+        .collect()
+}
+
 /// `cargo build`, returning every produced executable.
-fn cargo_build(release: bool) -> Vec<PathBuf> {
+fn cargo_build(release: bool, target: Option<&str>) -> Vec<PathBuf> {
     let mut cmd = Command::new("cargo");
     cmd.args(["build", "--message-format=json-render-diagnostics"]);
     if release {
         cmd.arg("--release");
     }
+    if let Some(t) = target {
+        cmd.args(["--target", t]);
+    }
     let out = cmd.stderr(Stdio::inherit()).output().unwrap_or_else(|e| die(format!("cargo: {e}")));
     if !out.status.success() {
-        die("cargo build failed");
+        match target {
+            Some(t) => die(format!("cargo build --target {t} failed (missing target? run `rustup target add {t}`)")),
+            None => die("cargo build failed"),
+        }
     }
     String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -137,7 +177,7 @@ fn assemble(release: bool, skip_setup: bool) {
     // target/ would lock them against the next cargo build.
     let stage = "build";
     println!("\n  KnobDeck Plugin — {}", if release { "build" } else { "dev" });
-    let exes = cargo_build(release);
+    let exes = build(release);
     let (plugin_exe, mut out) = codegen(&exes, stage);
     let mut manifest = out["manifest"].take();
     let actions = out["actions"].take();
