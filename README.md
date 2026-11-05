@@ -70,20 +70,21 @@ ctx.mark_setup_required("Discord token expired");   // host stops the plugin, as
 ctx.data_dir();                 // plugin-data/<id> — survives updates (see Data and logs)
 ```
 
-## Windows and macOS
+## Windows, macOS and Linux
 
-The host runs on Windows and macOS and spawns the binary built for its OS.
+The host runs on Windows, macOS and Linux and spawns the binary built for its OS.
 
 ```rust
 Plugin::new("mac-tools", "Mac Tools").platforms(&["macos"])        // whole plugin: one OS
 Action::button("lock", "Lock").platforms(&["windows"])              // one action: one OS
-knobdeck_sdk::platform();  knobdeck_sdk::is_mac();                      // "windows" | "macos"
-ctx.send_keys("mod t")?;   // `mod` is ⌘ on macOS and Ctrl on Windows; `cmd`/`win` is ⌘ / Win
+knobdeck_sdk::platform();  knobdeck_sdk::is_mac();  knobdeck_sdk::is_linux(); // "windows" | "macos" | "linux"
+ctx.send_keys("mod t")?;   // `mod` is ⌘ on macOS and Ctrl on Windows/Linux; `cmd`/`win` is ⌘ / Win / Super
 ```
 
-Without `platforms` a plugin or action is offered on both OSes. Elsewhere the host hides it from
+Without `platforms` a plugin or action is offered on every OS. Elsewhere the host hides it from
 pickers, and won't start a plugin whose `platforms` exclude its OS. `fg_process` is the exe name on
-Windows (`code.exe`) and the bundle id on macOS (`com.microsoft.VSCode`). `focus_app` takes an exe
+Windows (`code.exe`), the bundle id on macOS (`com.microsoft.VSCode`) and the window class /
+Wayland app id on Linux (`code`, `org.gnome.Nautilus`). `focus_app` takes an exe
 name/path on Windows and a bundle id, `.app` path or app name on macOS.
 
 `build` writes `runtime.executables` (and `setup.executables`) keyed by OS. Building on Windows

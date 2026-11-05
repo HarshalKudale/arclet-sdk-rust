@@ -224,7 +224,7 @@ impl Action {
         self.live = Some((every, Arc::new(f)));
         self
     }
-    /// Limit this action to some OSes (`"windows"`, `"macos"`). The host hides it
+    /// Limit this action to some OSes (`"windows"`, `"macos"`, `"linux"`). The host hides it
     /// from pickers elsewhere; already-placed slices report a clear error. Default: everywhere.
     pub fn platforms(mut self, os: &[&str]) -> Self {
         self.platforms = os.iter().map(|s| s.to_string()).collect();
@@ -252,7 +252,7 @@ pub(crate) struct Meta {
     pub setup_page: Option<String>,
     pub setup_assets_dir: Option<String>,
     pub setup_inputs: Vec<Value>,
-    /// OSes the plugin runs on (`"windows"`, `"macos"`); empty = everywhere.
+    /// OSes the plugin runs on (`"windows"`, `"macos"`, `"linux"`); empty = everywhere.
     pub platforms: Vec<String>,
 }
 
@@ -301,7 +301,7 @@ impl Plugin {
         self.meta.icon = Some(v.into());
         self
     }
-    /// OSes this plugin runs on (`"windows"`, `"macos"`). The host refuses to
+    /// OSes this plugin runs on (`"windows"`, `"macos"`, `"linux"`). The host refuses to
     /// start it elsewhere and shows it as unavailable. Default: everywhere.
     pub fn platforms(mut self, os: &[&str]) -> Self {
         self.meta.platforms = os.iter().map(|s| s.to_string()).collect();

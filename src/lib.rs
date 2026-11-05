@@ -93,20 +93,26 @@ pub fn load_env() {
     }
 }
 
-/// The OS this plugin runs on, as the host names it: `"windows"` or `"macos"`
+/// The OS this plugin runs on, as the host names it: `"windows"`, `"macos"` or `"linux"`
 /// (`KNOBDECK_PLATFORM` from the host, else the compile-time OS).
 pub fn platform() -> &'static str {
     match std::env::var("KNOBDECK_PLATFORM").as_deref() {
         Ok("windows") => "windows",
         Ok("macos") => "macos",
+        Ok("linux") => "linux",
         _ => std::env::consts::OS,
     }
 }
 
 /// `true` on macOS. Use it to pick per-OS key chords: `if is_mac() { "cmd t" } else { "ctrl t" }`
-/// (or send the `mod` token, which is ⌘ on macOS and Ctrl on Windows).
+/// (or send the `mod` token, which is ⌘ on macOS and Ctrl on Windows and Linux).
 pub fn is_mac() -> bool {
     platform() == "macos"
+}
+
+/// `true` on Linux.
+pub fn is_linux() -> bool {
+    platform() == "linux"
 }
 
 /// `env_or("VLC_PORT", "8080")` — env var with a default (empty counts as unset).
@@ -134,8 +140,11 @@ pub fn open_url(url: &str) -> Result<()> {
     // url.dll hands the URL to the shell as one argument, so `&` and spaces need no cmd quoting.
     let status = if cfg!(windows) {
         std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).status()
-    } else {
+    } else if cfg!(target_os = "macos") {
         std::process::Command::new("open").arg(url).status()
+    } else {
+        // freedesktop: hands the URL to the desktop's handler (GNOME, KDE and others).
+        std::process::Command::new("xdg-open").arg(url).status()
     };
     match status {
         Ok(s) if s.success() => Ok(()),
