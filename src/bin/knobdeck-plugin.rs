@@ -230,8 +230,10 @@ fn package() {
         _ => die("multiple plugins under dist/ — remove the stale ones"),
     };
     let out = Path::new("dist").join(format!("{}.knobdeck", dir.file_name().unwrap().to_string_lossy()));
-    // bsdtar (ships with Windows 10+, macOS, most Linux) writes zip with --format zip.
-    let status = Command::new("tar")
+    // bsdtar writes zip with --format zip. It is `tar` on Windows 10+ and macOS; Linux's `tar` is
+    // GNU tar (no zip), so use `bsdtar` there (Debian/Ubuntu: libarchive-tools; Arch: libarchive).
+    let tar = if Command::new("bsdtar").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok() { "bsdtar" } else { "tar" };
+    let status = Command::new(tar)
         .args(["--format", "zip", "-cf"])
         .arg(&out)
         .arg("-C")
@@ -245,9 +247,12 @@ fn package() {
                 .filter(|n| Path::new(n).extension().map_or(true, |x| x != "old")),
         )
         .status()
-        .unwrap_or_else(|e| die(format!("tar: {e}")));
+        .unwrap_or_else(|e| die(format!("{tar}: {e}")));
     if !status.success() {
-        die("tar failed to create the archive");
+        if cfg!(target_os = "linux") && tar == "tar" {
+            die("tar failed to create the archive: install bsdtar (Debian/Ubuntu: libarchive-tools, Arch: libarchive)");
+        }
+        die(format!("{tar} failed to create the archive"));
     }
     println!("  ✓ {}", out.display());
 }
