@@ -1,0 +1,21 @@
+# {{name}}
+
+{{description}}
+
+## Actions
+
+| Action | What it does |
+|---|---|
+| Greet | Logs a greeting and shows it on the key |
+| Switch | A toggle with On / Off states |
+| Press Counter | Live label counting Greet presses |
+
+## Build
+
+```bash
+knobdeck-plugin dev            # debug build -> dist/{{id}}/, then "Load Unpacked" in KnobDeck
+knobdeck-plugin dev --watch    # rebuild on change; KnobDeck restarts the plugin
+knobdeck-plugin drive          # run it over the protocol without KnobDeck (smoke test)
+knobdeck-plugin build          # release build
+knobdeck-plugin package        # dist/{{id}}.knobdeck
+```
