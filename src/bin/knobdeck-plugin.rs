@@ -1,5 +1,9 @@
 //! `knobdeck-plugin` — CLI for Rust KnobDeck plugins (run from the plugin crate folder).
 //!
+//!   new <folder> [--name N] [--id ID] [--os windows|macos|linux] [--author A] [--description D]
+//!                                  create a plugin crate (with the AI agent skill)
+//!   skill [folder]                 install the agent skill (default .claude/skills/knobdeck-plugin)
+//!   drive [steps.json]             run dist/<id>/ over the real protocol without KnobDeck
 //!   dev [--skip-setup] [--watch]   cargo build (debug), assemble dist/<id>/ for
 //!                                  "Load Unpacked"; --watch rebuilds on change and
 //!                                  KnobDeck restarts the plugin when its exe changes
@@ -10,12 +14,27 @@
 //! Codegen runs every built binary with KNOBDECK_CODEGEN=1; the plugin binary
 //! prints { manifest, actions } and the setup binary exits silently.
 
+#[path = "knobdeck-plugin/drive.rs"]
+mod drive;
+#[path = "knobdeck-plugin/scaffold.rs"]
+mod scaffold;
+
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const USAGE: &str = "knobdeck-plugin <dev|build|package>\n\n  dev [--skip-setup] [--watch]  build (debug) + assemble dist/<id>/ for \"Load Unpacked\"\n  build                         build (release) + assemble dist/<id>/\n  package                       zip dist/<id>/ -> dist/<id>.knobdeck\n";
+const USAGE: &str = "knobdeck-plugin <new|dev|drive|build|package|skill>
+
+  new <folder> [--name N] [--id ID] [--os windows|macos|linux]
+               [--author A] [--description D]
+                                create a plugin crate, with the AI agent skill
+  dev [--skip-setup] [--watch]  build (debug) + assemble dist/<id>/ for \"Load Unpacked\"
+  drive [steps.json]            run dist/<id>/ over the real protocol, without KnobDeck
+  build                         build (release) + assemble dist/<id>/
+  package                       zip dist/<id>/ -> dist/<id>.knobdeck
+  skill [folder]                write the agent skill (default .claude/skills/knobdeck-plugin)
+";
 
 fn die(msg: impl std::fmt::Display) -> ! {
     eprintln!("\n  ✗ {msg}");
@@ -287,6 +306,39 @@ fn watch(skip_setup: bool) -> ! {
     }
 }
 
+/// `new <folder> [--flag value]…`
+fn new_plugin(args: &[String]) {
+    let mut dir = None;
+    let mut opt = std::collections::HashMap::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.strip_prefix("--") {
+            Some(flag @ ("name" | "id" | "os" | "author" | "description")) => {
+                let v = it.next().unwrap_or_else(|| die(format!("--{flag} needs a value")));
+                opt.insert(flag, v.clone());
+            }
+            Some(other) => die(format!("unknown option --{other}\n\n{USAGE}")),
+            None if dir.is_none() => dir = Some(PathBuf::from(a)),
+            None => die(format!("unexpected argument {a:?}")),
+        }
+    }
+    let dir = dir.unwrap_or_else(|| die(format!("which folder?\n\n{USAGE}")));
+    let o = scaffold::NewOptions {
+        dir: dir.clone(),
+        id: opt.remove("id"),
+        name: opt.remove("name"),
+        os: opt.remove("os"),
+        author: opt.remove("author"),
+        description: opt.remove("description"),
+    };
+    let notes = scaffold::new_plugin(&o).unwrap_or_else(|e| die(e));
+    println!("\n  ✓ created {}", dir.display());
+    for n in notes {
+        println!("  · {n}");
+    }
+    println!("\n  Next:\n    cd {}\n    knobdeck-plugin dev      # then \"Load Unpacked\" dist/<id>/ in KnobDeck\n    knobdeck-plugin drive    # smoke test without KnobDeck\n", dir.display());
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |f: &str| args.iter().any(|a| a == f);
@@ -295,6 +347,13 @@ fn main() {
         Some("dev") => assemble(false, flag("--skip-setup")),
         Some("build") => assemble(true, false),
         Some("package") => package(),
+        Some("drive") => drive::drive(args.get(1).map(String::as_str)).unwrap_or_else(|e| die(e)),
+        Some("skill") => {
+            let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".claude/skills/knobdeck-plugin"));
+            scaffold::install_skill(&dir).unwrap_or_else(|e| die(e));
+            println!("  ✓ agent skill written to {}", dir.display());
+        }
+        Some("new") => new_plugin(&args[1..]),
         _ => print!("{USAGE}"),
     }
 }

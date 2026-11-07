@@ -1,0 +1,58 @@
+//! {{name}}: a KnobDeck plugin.
+//!
+//! `knobdeck-plugin dev` builds it into dist/{{id}}/; load that folder with "Load Unpacked" in
+//! KnobDeck (Plugins page). `knobdeck-plugin drive` runs it over the real protocol without KnobDeck.
+//!
+//! Do the work through an OS API or the app's own interface (local API, socket, AppleScript, CLI).
+//! Send a keyboard shortcut only when nothing else exists, and say why in a comment.
+
+use knobdeck_sdk::input::{self, InputExt};
+use knobdeck_sdk::{Action, Plugin, Visual};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+static PRESSES: AtomicU64 = AtomicU64::new(0);
+
+fn main() {
+    Plugin::new("{{id}}", "{{name}}")
+        .version(env!("CARGO_PKG_VERSION"))
+        .author("{{author}}")
+        .description("{{description}}"){{platforms}}
+        .icon("puzzle") // a Lucide icon name (lucide.dev), or a file in icons/
+        // A button with an input. Errors returned from a handler show on the key.
+        .action(
+            Action::button("greet", "Greet")
+                .icon("hand")
+                .inputs(vec![input::text("name", "Name").placeholder("world")])
+                .on_press(|ctx| {
+                    let name = ctx.input_str("name");
+                    let name = if name.is_empty() { "world".to_string() } else { name };
+                    PRESSES.fetch_add(1, Ordering::Relaxed);
+                    ctx.log(format!("hello, {name}"));
+                    ctx.set_label(format!("Hi {name}"));
+                    Ok(())
+                }),
+        )
+        // A toggle: the first state is the default; set_state moves between them.
+        .action(
+            Action::toggle("switch", "Switch")
+                .state("off", "Off", "toggle-left")
+                .state("on", "On", "toggle-right")
+                .on_press(|ctx| {
+                    let next = if ctx.state.as_deref() == Some("on") { "off" } else { "on" };
+                    ctx.set_state(next);
+                    Ok(())
+                }),
+        )
+        // Live content: runs every second for each placed key and pushes changes.
+        .action(
+            Action::button("counter", "Press Counter")
+                .icon("hash")
+                .live(Duration::from_secs(1), |_| {
+                    let n = PRESSES.load(Ordering::Relaxed);
+                    Ok(Visual::new().label(format!("{n} {}", if n == 1 { "press" } else { "presses" })))
+                })
+                .on_press(|_| Ok(())),
+        )
+        .run()
+}

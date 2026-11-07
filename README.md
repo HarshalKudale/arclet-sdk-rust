@@ -1,15 +1,30 @@
-# knobdeck-sdk (Rust)
+# knobdeck-sdk
 
-Declarative Rust SDK for authoring [KnobDeck](https://github.com/HarshalKudale/knobdeck) plugins — the
-Rust counterpart of [`@knobdeck/sdk`](../knobdeck-sdk). Same wire protocol, same action model, same
-generated `manifest.json` / `actions.json`; a plugin is a native executable.
+Declarative Rust SDK for [KnobDeck](https://knobdeck.harshalkudale.com) plugins. A plugin is a
+native executable: you declare actions with builders and write handlers; the SDK speaks the stdio
+protocol, and the `knobdeck-plugin` CLI creates, builds, tests and packages it.
 
 ## Quick start
 
+```bash
+cargo install --git https://github.com/HarshalKudale/knobdeck-sdk --bin knobdeck-plugin   # once
+
+knobdeck-plugin new acme-player --name "Acme Player"   # a working crate with three example actions
+cd acme-player
+knobdeck-plugin dev        # debug build -> dist/acme-player/ (use "Load Unpacked" in KnobDeck)
+knobdeck-plugin drive      # run it over the real protocol, without KnobDeck
+knobdeck-plugin dev --watch   # rebuild on change; KnobDeck restarts the plugin
+knobdeck-plugin build      # release build -> self-contained dist/<id>/ (universal on macOS)
+knobdeck-plugin package    # dist/<id>.knobdeck
+```
+
+`new` takes `--os windows|macos|linux` for a one-OS plugin, and `--id`, `--author`,
+`--description`. Inside a Cargo workspace whose `[workspace.dependencies]` has `knobdeck-sdk`, the
+new crate uses it (add the folder to `members`). Otherwise it depends on this repo:
+
 ```toml
-# Cargo.toml of your plugin crate
 [dependencies]
-knobdeck-sdk = { path = "../../knobdeck-sdk-rust" }
+knobdeck-sdk = { git = "https://github.com/HarshalKudale/knobdeck-sdk.git" }
 ```
 
 ```rust
@@ -17,7 +32,7 @@ use knobdeck_sdk::{Action, Plugin};
 
 fn main() {
     Plugin::new("demo", "Demo")
-        .version("1.0.0")
+        .version(env!("CARGO_PKG_VERSION"))
         .action(Action::button("ping", "Ping").on_press(|ctx| {
             ctx.log("pong");
             Ok(())
@@ -26,15 +41,39 @@ fn main() {
 }
 ```
 
-Install the CLI once, then run it from the plugin crate folder:
+## Build a plugin with an AI agent
 
-```bash
-cargo install --path ../knobdeck-sdk-rust --bin knobdeck-plugin
-knobdeck-plugin dev       # debug build -> dist/<id>/ (use "Load Unpacked" in KnobDeck)
-knobdeck-plugin dev --watch  # rebuild on change; KnobDeck restarts the plugin
-knobdeck-plugin build     # release build -> self-contained dist/<id>/
-knobdeck-plugin package   # dist/<id>.knobdeck
+Every crate made by `knobdeck-plugin new` contains the **knobdeck-plugin skill**
+(`.claude/skills/knobdeck-plugin/`, plain Markdown) plus an `AGENTS.md` pointing at it, so a
+coding agent opened in that folder (Claude Code, Codex, Cursor…) knows how to build, test and
+package a plugin, and how to reach the target app without faking keystrokes. Ask it, e.g.,
+*"Make this a plugin that controls Home Assistant lights"*.
+
+To have the skill everywhere instead: `knobdeck-plugin skill ~/.claude/skills/knobdeck-plugin`.
+The source is [`skills/knobdeck-plugin/`](skills/knobdeck-plugin/SKILL.md), with an API reference and
+three complete example plugins (a web API, a local app with a token, a macOS AppleScript app).
+
+## Testing with `drive`
+
+`knobdeck-plugin drive` starts `dist/<id>/` the way KnobDeck does (hello → ready → sync one
+instance of every action), prints every message the plugin sends, and shuts it down. Give it a
+steps file to exercise actions:
+
+```json
+[
+  {"press": "greet", "inputs": {"name": "Ada"}},
+  {"adjust": "volume", "value": 40},
+  {"hold": "push-to-talk", "ms": 300},
+  {"query": "playlists"},
+  {"open": "recent", "inputs": {}},
+  {"press": "recent", "child": "3"},
+  {"wait": 1500}
+]
 ```
+
+Host calls (`send_keys`, `focus_app`, `installed_apps`) get harmless stub answers and are printed;
+a `send_keys` is flagged, since it means the action fell back to keystrokes. It fails when the
+plugin writes anything but protocol messages to stdout.
 
 ## Action types
 
@@ -158,16 +197,12 @@ At runtime the plugin calls `knobdeck_sdk::load_env()` to read that `.env`. Decl
 
 Run the sign-in in the setup program; the token is kept as `oauth-token.json` in the data folder.
 
-## Differences from the JS SDK
-
-- No bundling step: `build` ships the release binaries in `dist/<id>/`; the manifest has no `runtime.language`, so the host runs it as a native executable.
-- `.env` is read at runtime (`load_env()`), not inlined at build time.
-- `category` is not part of the generated `actions.json` in the current JS SDK, so it is omitted here too.
-
 ## Layout
 
 `src/runtime.rs` (stdio protocol v2), `src/plugin.rs` (builders), `src/codegen.rs` (manifest/actions),
-`src/bin/knobdeck-plugin.rs` (CLI), `tests/protocol.rs` (drives the demo over pipes).
+`src/bin/knobdeck-plugin.rs` (CLI; `knobdeck-plugin/scaffold.rs` for `new`/`skill`,
+`knobdeck-plugin/drive.rs` for `drive`), `templates/plugin/` (what `new` writes),
+`skills/knobdeck-plugin/` (the agent skill), `tests/protocol.rs` (drives the demo over pipes).
 
 ## Protocol v2
 
